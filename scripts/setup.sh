@@ -46,11 +46,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 K8S_MODE=false
 A2A_ENABLED=false
 ENV_FILE=""
+KC_REALM="${KEYCLOAK_REALM:-demo}"
+KC_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --k8s) K8S_MODE=true; shift ;;
     --with-a2a) A2A_ENABLED=true; shift ;;
     --env-file) ENV_FILE="$2"; shift 2 ;;
+    --realm) KC_REALM="$2"; shift 2 ;;
+    --keycloak-namespace) KC_NAMESPACE="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -166,6 +170,8 @@ fi
 # Preserve CLI flags — .env sourcing must not overwrite them
 _CLI_A2A_ENABLED="$A2A_ENABLED"
 _CLI_K8S_MODE="$K8S_MODE"
+_CLI_KC_REALM="$KC_REALM"
+_CLI_KC_NAMESPACE="$KC_NAMESPACE"
 _ENV_REUSE=false
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -177,6 +183,8 @@ fi
 # CLI flags always win over .env values
 A2A_ENABLED="$_CLI_A2A_ENABLED"
 K8S_MODE="$_CLI_K8S_MODE"
+KC_REALM="$_CLI_KC_REALM"
+KC_NAMESPACE="$_CLI_KC_NAMESPACE"
 
 # Prompt for OpenClaw namespace prefix (skip if already set from local .env)
 if $_ENV_REUSE && [ -n "${OPENCLAW_PREFIX:-}" ]; then
@@ -442,6 +450,9 @@ MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI
 MLFLOW_EXPERIMENT_ID=$MLFLOW_EXPERIMENT_ID
 A2A_ENABLED=$A2A_ENABLED
 A2A_PEER_NAMESPACES=$A2A_PEER_NAMESPACES
+KEYCLOAK_REALM=$KC_REALM
+KEYCLOAK_NAMESPACE=$KC_NAMESPACE
+KEYCLOAK_URL=http://keycloak-service.${KC_NAMESPACE}.svc.cluster.local:8080
 EOF
 log_success ".env file created at $ENV_FILE"
 echo ""
@@ -601,7 +612,7 @@ echo ""
 # Create Kagenti AIB ConfigMaps and label namespace for webhook injection.
 # See setup-kagenti-ns.sh for details on what's created.
 if [ "$A2A_ENABLED" = "true" ]; then
-  NS_ARGS=(-n "$OPENCLAW_NAMESPACE")
+  NS_ARGS=(-n "$OPENCLAW_NAMESPACE" --realm "$KC_REALM" --keycloak-namespace "$KC_NAMESPACE")
   if $K8S_MODE; then NS_ARGS+=(--k8s); fi
   "$SCRIPT_DIR/setup-kagenti-ns.sh" "${NS_ARGS[@]}"
   echo ""

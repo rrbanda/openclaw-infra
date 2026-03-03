@@ -163,11 +163,21 @@ teardown_namespace() {
 # Teardown A2A / Keycloak resources (only if A2A was enabled)
 A2A_ENABLED="${A2A_ENABLED:-false}"
 if [ "$A2A_ENABLED" = "true" ]; then
-  # Remove Keycloak client (auto-registered by AuthBridge using SPIFFE ID)
-  KEYCLOAK_URL="${KEYCLOAK_URL:-https://keycloak-spiffe-demo.apps.ocp-beta-test.nerc.mghpcc.org}"
-  KEYCLOAK_REALM="${KEYCLOAK_REALM:-spiffe-demo}"
+  # Remove Keycloak client (auto-registered by AuthBridge using SPIFFE ID).
+  # Values come from .env (sourced above) or environment; fall back to defaults.
+  KC_NS="${KEYCLOAK_NAMESPACE:-keycloak}"
+  if [ -z "${KEYCLOAK_URL:-}" ]; then
+    # Auto-detect from route, then fall back to in-cluster
+    KC_ROUTE_HOST=$($KUBECTL get route keycloak -n "$KC_NS" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+    if [ -n "$KC_ROUTE_HOST" ]; then
+      KEYCLOAK_URL="https://${KC_ROUTE_HOST}"
+    else
+      KEYCLOAK_URL="http://keycloak-service.${KC_NS}.svc.cluster.local:8080"
+    fi
+  fi
+  KEYCLOAK_REALM="${KEYCLOAK_REALM:-demo}"
   KEYCLOAK_ADMIN_USERNAME="${KEYCLOAK_ADMIN_USERNAME:-admin}"
-  KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-admin123}"
+  KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-admin}"
   SPIFFE_CLIENT_ID="spiffe://demo.example.com/ns/${OPENCLAW_NAMESPACE}/sa/openclaw-oauth-proxy"
 
   log_info "Removing Keycloak client for $OPENCLAW_NAMESPACE..."

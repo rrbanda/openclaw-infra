@@ -9,11 +9,14 @@
 # Usage:
 #   ./scripts/setup-kagenti-ns.sh -n <namespace>              # Interactive
 #   ./scripts/setup-kagenti-ns.sh -n <namespace> --k8s        # Vanilla Kubernetes
+#   ./scripts/setup-kagenti-ns.sh -n <namespace> --realm nerc # Custom Keycloak realm
+#   ./scripts/setup-kagenti-ns.sh -n <namespace> --keycloak-namespace my-kc
 #
 # What it creates:
-#   - environments       — Keycloak keys for client-registration sidecar
-#   - authbridge-config  — Token URL and OIDC issuer for AuthBridge ext_proc
-#   - envoy-config       — Envoy proxy config for traffic interception
+#   - environments          — Keycloak keys for client-registration sidecar
+#   - authbridge-config     — Token URL and OIDC issuer for AuthBridge ext_proc
+#   - envoy-config          — Envoy proxy config for traffic interception
+#   - spiffe-helper-config  — SPIFFE helper cert paths and workload API socket
 #   - kagenti-enabled=true label on the namespace
 #   - Privileged SCC RoleBindings (OpenShift only)
 #
@@ -32,17 +35,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Parse flags
 K8S_MODE=false
 NAMESPACE=""
+KC_REALM="${KEYCLOAK_REALM:-demo}"
+KC_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--namespace) NAMESPACE="$2"; shift 2 ;;
+    --realm) KC_REALM="$2"; shift 2 ;;
+    --keycloak-namespace) KC_NAMESPACE="$2"; shift 2 ;;
     --k8s) K8S_MODE=true; shift ;;
     -h|--help)
       echo "Usage: $0 -n <namespace> [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  -n, --namespace NS  Target namespace (required)"
-      echo "  --k8s               Use kubectl instead of oc"
-      echo "  -h, --help          Show this help"
+      echo "  -n, --namespace NS            Target namespace (required)"
+      echo "  --realm REALM                 Keycloak realm (default: demo, or \$KEYCLOAK_REALM)"
+      echo "  --keycloak-namespace NS       Keycloak namespace (default: keycloak, or \$KEYCLOAK_NAMESPACE)"
+      echo "  --k8s                         Use kubectl instead of oc"
+      echo "  -h, --help                    Show this help"
       exit 0
       ;;
     *) shift ;;
@@ -88,29 +97,40 @@ log_info "Setting up Kagenti AIB in namespace: $NAMESPACE"
 $KUBECTL label namespace "$NAMESPACE" kagenti-enabled=true --overwrite > /dev/null
 log_success "Namespace labeled (kagenti-enabled=true)"
 
-# Detect Keycloak public URL (for OIDC issuer)
-KC_ROUTE=$($KUBECTL get route keycloak -n keycloak -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+# Internal Keycloak service URL (used by sidecars within the cluster)
+KC_INTERNAL_URL="http://keycloak-service.${KC_NAMESPACE}.svc.cluster.local:8080"
+
+# Detect Keycloak public URL (for OIDC issuer — must be reachable from outside the cluster)
+KC_ROUTE=$($KUBECTL get route keycloak -n "$KC_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
 if [ -n "$KC_ROUTE" ]; then
   KC_PUBLIC_URL="https://${KC_ROUTE}"
 else
   # Fallback: try to detect cluster domain
   CLUSTER_DOMAIN=$($KUBECTL get ingresses.config/cluster -o jsonpath='{.spec.domain}' 2>/dev/null || echo "")
   if [ -n "$CLUSTER_DOMAIN" ]; then
-    KC_PUBLIC_URL="https://keycloak-keycloak.${CLUSTER_DOMAIN}"
+    KC_PUBLIC_URL="https://keycloak-${KC_NAMESPACE}.${CLUSTER_DOMAIN}"
   else
-    KC_PUBLIC_URL="http://keycloak-service.keycloak.svc.cluster.local:8080"
+    KC_PUBLIC_URL="$KC_INTERNAL_URL"
     log_warn "Could not detect Keycloak public URL — using in-cluster URL"
   fi
 fi
 
 # Read Keycloak admin credentials from the RHBK operator secret
-KC_ADMIN_USER=$($KUBECTL get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.username}' 2>/dev/null | base64 -d) || KC_ADMIN_USER="admin"
-KC_ADMIN_PASS=$($KUBECTL get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.password}' 2>/dev/null | base64 -d) || KC_ADMIN_PASS="admin"
+KC_ADMIN_USER=$($KUBECTL get secret keycloak-initial-admin -n "$KC_NAMESPACE" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d) || KC_ADMIN_USER="admin"
+KC_ADMIN_PASS=$($KUBECTL get secret keycloak-initial-admin -n "$KC_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d) || KC_ADMIN_PASS="admin"
+
+log_info "Keycloak: realm=$KC_REALM namespace=$KC_NAMESPACE"
 
 # 1. environments — Keycloak keys for client-registration sidecar
+#
+# ⚠️  SECURITY NOTE: Admin credentials are stored in a ConfigMap (not a Secret).
+# The kagenti-webhook's client-registration sidecar hardcodes configMapKeyRef for
+# KEYCLOAK_ADMIN_USERNAME and KEYCLOAK_ADMIN_PASSWORD — there is no secretKeyRef
+# support yet. This is a known upstream issue:
+# https://github.com/kagenti/kagenti-extensions/blob/main/kagenti-webhook/internal/webhook/injector/container_builder.go#L136-#L155
 $KUBECTL create configmap environments -n "$NAMESPACE" \
-  --from-literal=KEYCLOAK_REALM=demo \
-  --from-literal=KEYCLOAK_URL=http://keycloak-service.keycloak.svc.cluster.local:8080 \
+  --from-literal=KEYCLOAK_REALM="$KC_REALM" \
+  --from-literal=KEYCLOAK_URL="$KC_INTERNAL_URL" \
   --from-literal=KEYCLOAK_ADMIN_USERNAME="$KC_ADMIN_USER" \
   --from-literal=KEYCLOAK_ADMIN_PASSWORD="$KC_ADMIN_PASS" \
   --from-literal=KEYCLOAK_TOKEN_EXCHANGE_ENABLED=true \
@@ -121,12 +141,12 @@ log_success "  environments (Keycloak user: $KC_ADMIN_USER)"
 
 # 2. authbridge-config — token endpoint and issuer for AuthBridge ext_proc
 $KUBECTL create configmap authbridge-config -n "$NAMESPACE" \
-  --from-literal=TOKEN_URL=http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \
-  --from-literal=ISSUER="${KC_PUBLIC_URL}/realms/demo" \
+  --from-literal=TOKEN_URL="${KC_INTERNAL_URL}/realms/${KC_REALM}/protocol/openid-connect/token" \
+  --from-literal=ISSUER="${KC_PUBLIC_URL}/realms/${KC_REALM}" \
   --from-literal=TARGET_AUDIENCE=auth-target \
   --from-literal=TARGET_SCOPES="openid auth-target-aud" \
   --dry-run=client -o yaml | $KUBECTL apply -f -
-log_success "  authbridge-config (issuer: ${KC_PUBLIC_URL}/realms/demo)"
+log_success "  authbridge-config (issuer: ${KC_PUBLIC_URL}/realms/${KC_REALM})"
 
 # 3. envoy-config — Envoy proxy config for outbound/inbound traffic interception
 ENVOY_TMP=$(mktemp)
@@ -249,6 +269,25 @@ $KUBECTL create configmap envoy-config -n "$NAMESPACE" \
   --dry-run=client -o yaml | $KUBECTL apply -f -
 rm -f "$ENVOY_TMP"
 log_success "  envoy-config"
+
+# 4. spiffe-helper-config — SPIFFE helper sidecar cert paths and socket
+HELPER_TMP=$(mktemp)
+cat > "$HELPER_TMP" <<'HELPER_EOF'
+agent_address = "/spiffe-workload-api/spire-agent.sock"
+cmd = ""
+cmd_args = ""
+svid_file_name = "/opt/svid.pem"
+svid_key_file_name = "/opt/svid_key.pem"
+svid_bundle_file_name = "/opt/svid_bundle.pem"
+jwt_svids = [{jwt_audience="kagenti", jwt_svid_file_name="/opt/jwt_svid.token"}]
+jwt_svid_file_mode = 0644
+include_federated_domains = true
+HELPER_EOF
+$KUBECTL create configmap spiffe-helper-config -n "$NAMESPACE" \
+  --from-file=helper.conf="$HELPER_TMP" \
+  --dry-run=client -o yaml | $KUBECTL apply -f -
+rm -f "$HELPER_TMP"
+log_success "  spiffe-helper-config"
 
 # OpenShift: grant privileged SCC to default and pipeline SAs
 # (needed for proxy-init iptables and envoy runAsUser)
