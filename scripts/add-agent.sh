@@ -327,8 +327,9 @@ log_success "Workspace files installed"
 # ---- Step 8: Restart gateway ----
 
 log_info "Restarting OpenClaw to load the new agent..."
-$KUBECTL rollout restart deployment/openclaw -n "$OPENCLAW_NAMESPACE"
-$KUBECTL rollout status deployment/openclaw -n "$OPENCLAW_NAMESPACE" --timeout=120s
+$KUBECTL delete pod -l app=openclaw -n "$OPENCLAW_NAMESPACE" --force --grace-period=0 2>/dev/null || \
+  $KUBECTL rollout restart deployment/openclaw -n "$OPENCLAW_NAMESPACE"
+$KUBECTL rollout status deployment/openclaw -n "$OPENCLAW_NAMESPACE" --timeout=300s
 log_success "OpenClaw ready"
 
 # ---- Step 9: Update cron jobs (if JOB.md exists) ----
@@ -338,7 +339,7 @@ if [ -f "$AGENTS_DIR/$AGENT_ID/JOB.md" ]; then
   log_info "Updating cron jobs..."
   K8S_FLAG=""
   $K8S_MODE && K8S_FLAG="--k8s"
-  "$SCRIPT_DIR/update-jobs.sh" $K8S_FLAG
+  "$SCRIPT_DIR/update-jobs.sh" --agent "$AGENT_ID" --skip-restart $K8S_FLAG
 fi
 
 # ---- Done ----

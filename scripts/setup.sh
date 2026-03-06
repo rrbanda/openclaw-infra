@@ -920,8 +920,8 @@ if [ "$A2A_ENABLED" = "true" ]; then
   echo "Skills:        A2A"
 fi
 echo ""
-echo "Next steps (optional) — deploy additional agents + cron jobs:"
-echo "  scripts/setup-agents.sh$(if $K8S_MODE; then echo ' --k8s'; fi)"
+echo "Add another agent:"
+echo "  ./scripts/add-agent.sh"
 echo ""
 
 log_success "Setup complete!"

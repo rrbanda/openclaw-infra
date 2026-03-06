@@ -17,7 +17,8 @@
 #   resource-optimizer/ → ${OPENCLAW_PREFIX}_resource_optimizer
 #
 # Usage:
-#   ./update-jobs.sh                  # OpenShift (default)
+#   ./update-jobs.sh                  # OpenShift (default, all agents)
+#   ./update-jobs.sh --agent myagent  # Single agent only
 #   ./update-jobs.sh --k8s            # Vanilla Kubernetes
 #   ./update-jobs.sh --skip-restart   # Write files but don't restart gateway
 #   ./update-jobs.sh --dry-run        # Print jobs.json without writing
@@ -31,11 +32,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Parse flags
 SKIP_RESTART=false
 DRY_RUN=false
-for arg in "$@"; do
-  case "$arg" in
-    --k8s) KUBECTL="${KUBECTL:-kubectl}" ;;
-    --skip-restart) SKIP_RESTART=true ;;
-    --dry-run) DRY_RUN=true ;;
+AGENT_FILTER=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --k8s) KUBECTL="${KUBECTL:-kubectl}"; shift ;;
+    --skip-restart) SKIP_RESTART=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --agent) AGENT_FILTER="$2"; shift 2 ;;
+    *) shift ;;
   esac
 done
 
@@ -87,10 +91,17 @@ fi
 AGENTS_DIR="$REPO_ROOT/agents/openclaw/agents"
 JOB_FILES=()
 
-for job_file in "$AGENTS_DIR"/*/JOB.md; do
-  [ -f "$job_file" ] || continue
-  JOB_FILES+=("$job_file")
-done
+if [ -n "$AGENT_FILTER" ]; then
+  # Single agent mode
+  if [ -f "$AGENTS_DIR/$AGENT_FILTER/JOB.md" ]; then
+    JOB_FILES+=("$AGENTS_DIR/$AGENT_FILTER/JOB.md")
+  fi
+else
+  for job_file in "$AGENTS_DIR"/*/JOB.md; do
+    [ -f "$job_file" ] || continue
+    JOB_FILES+=("$job_file")
+  done
+fi
 
 if [ ${#JOB_FILES[@]} -eq 0 ]; then
   log_warn "No JOB.md files found in $AGENTS_DIR/*/JOB.md"
