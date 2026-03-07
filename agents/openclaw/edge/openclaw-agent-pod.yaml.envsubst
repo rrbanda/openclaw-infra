@@ -53,6 +53,8 @@ spec:
           value: /home/node/.openclaw
         - name: OPENCLAW_CONFIG_DIR
           value: /home/node/.openclaw
+        - name: OPENCLAW_GATEWAY_BIND
+          value: lan
         - name: OPENCLAW_GATEWAY_TOKEN
           valueFrom:
             configMapKeyRef:
