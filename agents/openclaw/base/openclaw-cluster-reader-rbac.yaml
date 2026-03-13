@@ -1,0 +1,39 @@
+# RBAC: namespace-scoped read access for the agent's ServiceAccount.
+# Allows the OpenClaw agent to query cluster resources via the K8s API
+# using curl + the ServiceAccount token mounted in the pod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openclaw-cluster-reader
+  namespace: openclaw
+  labels:
+    app: openclaw
+rules:
+- apiGroups: [""]
+  resources: [pods, services, configmaps]
+  verbs: [get, list, watch]
+- apiGroups: ["apps"]
+  resources: [deployments, statefulsets, daemonsets]
+  verbs: [get, list, watch]
+- apiGroups: ["batch"]
+  resources: [jobs, cronjobs]
+  verbs: [get, list, watch]
+- apiGroups: ["route.openshift.io"]
+  resources: [routes]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openclaw-cluster-reader
+  namespace: openclaw
+  labels:
+    app: openclaw
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openclaw-cluster-reader
+subjects:
+- kind: ServiceAccount
+  name: openclaw-oauth-proxy
+  namespace: openclaw

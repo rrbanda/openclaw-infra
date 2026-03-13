@@ -1,0 +1,31 @@
+# RBAC: cluster-scoped read access for cross-namespace queries.
+# Applied separately by setup.sh (not via kustomize, which would set namespace).
+# Cleaned up by teardown.sh via the namespaced ClusterRoleBinding name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openclaw-cluster-viewer
+  labels:
+    app: openclaw
+rules:
+- apiGroups: [""]
+  resources: [namespaces, pods]
+  verbs: [get, list]
+- apiGroups: ["apps"]
+  resources: [deployments]
+  verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openclaw-cluster-viewer-${OPENCLAW_NAMESPACE}
+  labels:
+    app: openclaw
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openclaw-cluster-viewer
+subjects:
+- kind: ServiceAccount
+  name: openclaw-oauth-proxy
+  namespace: ${OPENCLAW_NAMESPACE}

@@ -192,6 +192,12 @@ spec:
               name: openclaw-secrets
               key: ANTHROPIC_API_KEY
               optional: true
+        - name: GOOGLE_AI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: GOOGLE_AI_API_KEY
+              optional: true
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           valueFrom:
             secretKeyRef:

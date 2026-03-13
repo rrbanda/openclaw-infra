@@ -184,12 +184,39 @@ data:
     - NEVER cat, echo, or display .env contents
     - Source .env silently, then use variables in commands
 
+    ## Cluster Access
+
+    You have read-only access to the OpenShift/Kubernetes cluster via the in-cluster API.
+    Use curl with the ServiceAccount token to query resources. Use node (NOT jq) for JSON processing since jq is not installed.
+
+    ```bash
+    TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+    CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+
+    # List deployments across all namespaces (grouped by namespace)
+    curl -s --cacert $CA -H "Authorization: Bearer $TOKEN" "https://kubernetes.default.svc/apis/apps/v1/deployments" | node -e "let d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{const j=JSON.parse(Buffer.concat(d));const items=j.items||[];const byNs={};items.forEach(i=>{const ns=i.metadata.namespace;if(!ns.startsWith('openshift-')&&!ns.startsWith('redhat-')&&ns!=='default'){if(!byNs[ns])byNs[ns]=[];byNs[ns].push(i.metadata.name)}});Object.keys(byNs).sort().forEach(ns=>console.log(ns+': '+byNs[ns].join(', ')))})"
+
+    # List pods in a specific namespace
+    curl -s --cacert $CA -H "Authorization: Bearer $TOKEN" "https://kubernetes.default.svc/api/v1/namespaces/NAMESPACE/pods" | node -e "let d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{const j=JSON.parse(Buffer.concat(d));(j.items||[]).forEach(i=>console.log(i.metadata.name+' '+i.status.phase))})"
+
+    # List namespaces (excluding system namespaces)
+    curl -s --cacert $CA -H "Authorization: Bearer $TOKEN" "https://kubernetes.default.svc/api/v1/namespaces" | node -e "let d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{const j=JSON.parse(Buffer.concat(d));(j.items||[]).forEach(i=>{const n=i.metadata.name;if(!n.startsWith('openshift-')&&!n.startsWith('redhat-')&&n!=='default'&&n!=='kube-system'&&n!=='kube-public'&&n!=='kube-node-lease')console.log(n)})})"
+    ```
+
+    IMPORTANT: jq is NOT installed. Always use `node -e` for JSON processing instead of jq.
+    When users ask about apps or deployments, show all non-system namespaces (exclude namespaces starting with openshift- or redhat-). Group results by namespace for readability.
+
     ## Skills
     Check the skills directory for installed skills:
     `ls ~/.openclaw/skills/`
 
     Each skill has a SKILL.md with usage instructions. Use skills when
     they match the user's request.
+
+    ## Available CLI Tools
+    - `cat` - read files
+    - `curl` - HTTP requests (including Kubernetes API)
+    - `node` - JavaScript runtime (use for JSON processing instead of jq)
 
     ## Attribution
     - When leaving permanent text, prefix with "🎩 ${SHADOWMAN_DISPLAY_NAME}:"

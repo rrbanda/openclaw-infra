@@ -4,6 +4,8 @@ OpenClaw is an open-source AI agent gateway — a platform for running, managing
 This guide gets you from zero to a running OpenClaw instance on OpenShift, with OpenShift OAuth protecting the
 UI and enterprise security hardening out of the box.
 
+> For the full step-by-step walkthrough with expected output and troubleshooting, see [OPENSHIFT-WALKTHROUGH.md](OPENSHIFT-WALKTHROUGH.md).
+
 ## Why OpenShift?
 
 OpenClaw runs on any Kubernetes cluster, but OpenShift adds layers of security that matter when you're
@@ -13,7 +15,8 @@ running AI agents that can call tools, execute code, and interact with external 
 
 **OAuth integration** — OpenClaw's deployment includes an [oauth-proxy](https://github.com/openshift/oauth-proxy)
 sidecar that authenticates users against OpenShift's built-in OAuth server. No external identity provider to configure.
-If you can `oc login`, you can access your agent.
+If you can `oc login`, you can access your agent. The gateway uses `trusted-proxy` authentication — the OAuth proxy
+forwards your OpenShift username via `X-Forwarded-User` and the gateway accepts it automatically. No gateway token required.
 
 **Security Context Constraints (SCCs)** — OpenShift's default `restricted-v2` SCC enforces a strict posture on every container:
 
@@ -31,52 +34,49 @@ and `capabilities.drop: [ALL]`.
 ### The pod architecture
 
 ```
-                     ┌─── OpenShift Route (TLS) ───┐
-                     │                             │
-                     ▼                             │
-              ┌─────────────┐                      │
-              │ oauth-proxy │ ◄── OpenShift OAuth  │
-              │  (port 8443)│                      │
-              └──────┬──────┘                      │
-                     │ authenticated               │
-                     ▼                             │
-              ┌─────────────┐                      │
-              │   gateway   │ ◄── loopback only    │
-              │ (port 18789)│     read-only root   │
-              └─────────────┘     all caps dropped │
-              ┌─────────────┐                      │
-              │ init-config │ ◄── runs at start    │
-              │ (init cont) │   copies config→PVC  │
-              └─────────────┘                      │
-                                                   │
-    PVC (/home/node/.openclaw) ◄───────────────────┘
-      Config, sessions, agent workspaces
+    Browser ──HTTPS──► OpenShift Route (TLS edge)
+                              │
+                              ▼ targetPort: oauth-ui (8443)
+                       ┌─────────────┐
+                       │ oauth-proxy │ ◄── OpenShift OAuth
+                       │  (port 8443)│     authenticates user
+                       └──────┬──────┘
+                              │ adds X-Forwarded-User header
+                              ▼ http://localhost:18789
+                       ┌─────────────┐
+                       │   gateway   │ ◄── bind: loopback
+                       │ (port 18789)│     auth: trusted-proxy
+                       └─────────────┘     read-only root
+                       ┌─────────────┐     all caps dropped
+                       │ init-config │ ◄── runs at start
+                       │ (init cont) │     copies config → PVC
+                       └─────────────┘
+
+         PVC (/home/node/.openclaw)
+           Config, sessions, agent workspaces
 ```
 
 All containers run under `restricted-v2`. No custom SCC. No cluster-admin for the workload itself.
 
 ### What the platform deploys
 
-Beyond the pod, the setup script creates namespace-level security resources:
-
 | Resource | Purpose |
 |----------|---------|
 | **ResourceQuota** | Caps the namespace at 4 CPU / 8Gi RAM requests, 20 pods, 100Gi storage |
 | **PodDisruptionBudget** | `maxUnavailable: 0` — protects the pod during node maintenance |
-| **ServiceAccount** | Dedicated SA for the oauth-proxy (no API permissions granted) |
+| **ServiceAccount** | Dedicated SA for the oauth-proxy with read-only cluster access |
 | **OAuthClient** | Cluster-scoped — registers the instance with OpenShift's OAuth server |
-
-The gateway container has zero Kubernetes API permissions. It talks to model
-providers (Anthropic, OpenAI, Vertex AI, etc.) over HTTPS and serves the UI on loopback. That's it.
+| **Role/RoleBinding** | Namespace-scoped read access for the agent to query K8s resources |
+| **ClusterRole/ClusterRoleBinding** | Cross-namespace read access for deployments, pods, namespaces |
 
 ## Prerequisites
 
 - An OpenShift cluster (4.x) where you can create a namespace
 - `oc` CLI authenticated (`oc login`)
-- An API key for at least one model provider (Anthropic, OpenAI, Google, etc.)
+- An API key for at least one model provider (see [Model options](#model-options))
 
-The OAuthClient is a cluster-scoped resource. If you don't have cluster-admin, the script will print the
-exact command to give your admin — it's a single `oc apply`.
+The OAuthClient and ClusterRoleBinding are cluster-scoped resources. If you don't have cluster-admin, the script
+will print the exact commands to give your admin.
 
 ## Deploy
 
@@ -90,8 +90,9 @@ The script is interactive. It will prompt you for:
 
 1. **Namespace prefix** — your name or team (e.g., `alice`). Creates the namespace `alice-openclaw`.
 2. **Agent name** — a display name for your default agent (e.g., `Atlas`, `Scout`, `Raven`).
-3. **API key** — for your model provider. The script detects `ANTHROPIC_API_KEY` from your environment automatically, or
-prompts for it.
+3. **Anthropic API key** — optional, for Claude models. Leave empty to skip.
+4. **Google AI API key** — optional, for Gemini models via [Google AI Studio](https://aistudio.google.com/app/apikey). Leave empty to skip.
+5. **Model endpoint** — for in-cluster models. Press Enter for the default vLLM URL.
 
 Everything else is auto-generated (gateway token, OAuth secrets, cookie secrets) and saved to `.env` (git-ignored).
 
@@ -107,26 +108,23 @@ Access URLs:
   OpenClaw Gateway:   https://openclaw-alice-openclaw.apps.your-cluster.example.com
 ```
 
-OpenShift OAuth handles authentication — you'll be redirected to the OpenShift login page. After authenticating, the
-Control UI asks for your **Gateway Token**:
-
-```bash
-grep OPENCLAW_GATEWAY_TOKEN .env
-```
-
-Paste it in, and you're in.
+Open the URL in your browser. OpenShift OAuth handles authentication — you'll be redirected to the OpenShift login page.
+After authenticating, the Control UI loads automatically. No gateway token is needed.
 
 ## What you get
 
 A running OpenClaw gateway with:
 
 - **Your named agent** — an interactive AI agent backed by the model provider you configured
-- **WebChat UI** — browser-based chat interface
 - **Control UI** — agent management, session history, configuration
+- **Cluster access** — the agent can query Kubernetes resources in your namespace and across the cluster (read-only)
+
 ### Talk to your agent
 
-Open the WebChat UI from the Control UI sidebar, select your agent, and start chatting. The agent has access to the
+Select your agent in the sidebar and start chatting. The agent has access to the
 tools configured in your gateway — by default, a general-purpose assistant backed by your chosen model.
+
+Try asking: *"What apps are deployed on this cluster?"* — the agent will query the Kubernetes API and list deployments.
 
 ### Create your own agent
 
@@ -143,10 +141,21 @@ The setup script supports multiple model providers. You can also change models a
 | Provider | Model | How to configure |
 |----------|-------|-----------------|
 | Anthropic | `anthropic/claude-sonnet-4-6` | `ANTHROPIC_API_KEY` env var or interactive prompt |
-| OpenAI | `openai/gpt-4o` | Interactive prompt during setup |
+| Google AI Studio | `google/gemini-2.5-flash` | `GOOGLE_AI_API_KEY` env var or interactive prompt |
 | Google Vertex AI | `google-vertex/gemini-2.5-pro` | `--vertex` flag, requires GCP project |
 | Claude via Vertex | `anthropic-vertex/claude-sonnet-4-6` | `--vertex --vertex-provider anthropic` |
 | In-cluster vLLM | Any model on your GPU node | Set `MODEL_ENDPOINT` to your vLLM `/v1` URL |
+
+**Model priority:** Anthropic > Google AI Studio > Vertex > in-cluster. The first available key wins.
+
+## Known issues
+
+| Issue | Cause | Resolution |
+|-------|-------|------------|
+| Google AI Studio returns 400 errors | OpenClaw sends `thinking` or `store` parameters that Gemini doesn't support | Already handled by config: `thinkingDefault: off` and `compat.supportsStore: false` |
+| Agent says "jq isn't installed" | The container image does not include `jq` | Agent is configured to use `node -e` for JSON processing instead |
+| Agent says "oc isn't available" | The container image does not include `oc` | Agent uses `curl` + ServiceAccount token to query the K8s API directly |
+| Stale agent behavior after model changes | Old sessions cache model parameters | Restart the pod: `oc rollout restart deployment/openclaw -n <namespace>` |
 
 ## Teardown
 
@@ -154,20 +163,20 @@ The setup script supports multiple model providers. You can also change models a
 ./scripts/teardown.sh
 ```
 
-Removes the namespace, all resources, the OAuthClient, and the `generated/` directory. Your `.env` is kept
-unless you pass `--delete-env`.
+Removes the namespace, all resources, the OAuthClient, cluster RBAC, and the `generated/` directory.
+Your `.env` is kept unless you pass `--delete-env`.
 
 ## Next steps
 
 | What | How |
 |------|-----|
+| Full deployment walkthrough | [OPENSHIFT-WALKTHROUGH.md](OPENSHIFT-WALKTHROUGH.md) |
 | Create a custom agent | `./scripts/add-agent.sh` (scaffolds, deploys, and restarts — end to end) |
 | Save live config | `./scripts/export-config.sh` (exports live `openclaw.json` from running pod) |
 | Re-deploy safely | `./scripts/setup.sh` detects config drift and prompts to preserve |
 | Add scheduled jobs | Create a `JOB.md` in your agent directory, run `./scripts/update-jobs.sh` |
 | Enable observability | `./scripts/deploy-otelcollector.sh` (requires OTEL Operator + MLflow) |
 | Enable zero-trust A2A | Redeploy with `./scripts/setup.sh --with-a2a` (requires [Kagenti](https://github.com/kagenti/kagenti)) |
-| Full architecture docs | [A2A-ARCHITECTURE.md](https://github.com/redhat-et/openclaw-k8s/blob/main/docs/A2A-ARCHITECTURE.md), [TEAMMATE-QUICKSTART.md](https://github.com/redhat-et/openclaw-k8s/blob/main/docs/TEAMMATE-QUICKSTART.md) |
 
 ## Links
 

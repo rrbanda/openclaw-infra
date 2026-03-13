@@ -256,6 +256,7 @@ if $_ENV_REUSE; then
   OPENCLAW_OAUTH_CLIENT_SECRET="${OPENCLAW_OAUTH_CLIENT_SECRET:-}"
   OPENCLAW_OAUTH_COOKIE_SECRET="${OPENCLAW_OAUTH_COOKIE_SECRET:-}"
   ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+  GOOGLE_AI_API_KEY="${GOOGLE_AI_API_KEY:-}"
   MODEL_ENDPOINT="${MODEL_ENDPOINT:-}"
   VERTEX_ENABLED="${VERTEX_ENABLED:-false}"
   VERTEX_PROVIDER="${VERTEX_PROVIDER:-google}"
@@ -307,6 +308,23 @@ else
       log_success "Anthropic API key set"
     else
       log_info "Skipped — agents will use in-cluster model only"
+    fi
+  fi
+  echo ""
+
+  # Prompt for Google AI Studio API key (optional — for Gemini models via Google AI)
+  if [ -n "${GOOGLE_AI_API_KEY:-}" ]; then
+    log_success "Google AI API key detected from environment"
+  else
+    log_info "Google AI Studio API key (optional, for Gemini models):"
+    log_info "  Get a key at https://aistudio.google.com/app/apikey"
+    read -sp "  API key (leave empty to skip): " GOOGLE_AI_API_KEY
+    echo
+    GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY:-}
+    if [ -n "$GOOGLE_AI_API_KEY" ]; then
+      log_success "Google AI API key set (Gemini 2.5 Pro)"
+    else
+      log_info "Skipped"
     fi
   fi
   echo ""
@@ -423,6 +441,7 @@ if [ -d "$REPO_ROOT/manifests-private" ]; then
 fi
 
 # Ensure all .env variables have defaults (guards against set -u on any code path)
+GOOGLE_AI_API_KEY="${GOOGLE_AI_API_KEY:-}"
 VERTEX_PROVIDER="${VERTEX_PROVIDER:-google}"
 VERTEX_SA_JSON_PATH="${VERTEX_SA_JSON_PATH:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
@@ -443,6 +462,7 @@ OPENCLAW_GATEWAY_TOKEN=$OPENCLAW_GATEWAY_TOKEN
 OPENCLAW_OAUTH_CLIENT_SECRET=$OPENCLAW_OAUTH_CLIENT_SECRET
 OPENCLAW_OAUTH_COOKIE_SECRET=$OPENCLAW_OAUTH_COOKIE_SECRET
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+GOOGLE_AI_API_KEY=$GOOGLE_AI_API_KEY
 MODEL_ENDPOINT=$MODEL_ENDPOINT
 VERTEX_ENABLED=$VERTEX_ENABLED
 VERTEX_PROVIDER=$VERTEX_PROVIDER
@@ -483,6 +503,9 @@ export OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-quay.io/sallyom/openclaw:latest}"
 # Default model endpoint (for existing .env files that don't have it yet)
 export MODEL_ENDPOINT="${MODEL_ENDPOINT:-http://vllm.openclaw-llms.svc.cluster.local/v1}"
 
+# Google AI Studio defaults (for existing .env files that don't have these yet)
+export GOOGLE_AI_API_KEY="${GOOGLE_AI_API_KEY:-}"
+
 # Vertex defaults (for existing .env files that don't have these yet)
 export VERTEX_ENABLED="${VERTEX_ENABLED:-false}"
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-}"
@@ -503,11 +526,14 @@ else
   export MLFLOW_TLS_INSECURE="true"
 fi
 
-# Agent model priority: Anthropic API > Vertex (anthropic or google) > in-cluster
+# Agent model priority: Anthropic API > Google AI > Vertex (anthropic or google) > in-cluster
 # VERTEX_PROVIDER controls which Vertex provider: "anthropic" or "google" (default)
 export VERTEX_PROVIDER="${VERTEX_PROVIDER:-google}"
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   export DEFAULT_AGENT_MODEL="anthropic/claude-sonnet-4-6"
+elif [ -n "${GOOGLE_AI_API_KEY:-}" ]; then
+  export DEFAULT_AGENT_MODEL="google/gemini-2.5-flash"
+  log_info "Using Google AI Studio (Gemini 2.5 Flash) as default agent model"
 elif [ "${VERTEX_ENABLED:-}" = "true" ] && [ "${VERTEX_PROVIDER}" = "anthropic" ]; then
   export DEFAULT_AGENT_MODEL="anthropic-vertex/claude-sonnet-4-6"
   log_info "Using Anthropic Vertex (Claude via GCP) as default agent model"
@@ -516,11 +542,11 @@ elif [ "${VERTEX_ENABLED:-}" = "true" ]; then
   log_info "Using Google Vertex (Gemini) as default agent model"
 else
   export DEFAULT_AGENT_MODEL="local/openai/gpt-oss-20b"
-  log_info "No Anthropic API key or Vertex — agents will use in-cluster model (${MODEL_ENDPOINT})"
+  log_info "No API keys or Vertex — agents will use in-cluster model (${MODEL_ENDPOINT})"
 fi
 
 # Explicit variable list to protect {agentId} and other non-env placeholders
-ENVSUBST_VARS='${CLUSTER_DOMAIN} ${OPENCLAW_PREFIX} ${OPENCLAW_NAMESPACE} ${OPENCLAW_GATEWAY_TOKEN} ${OPENCLAW_OAUTH_CLIENT_SECRET} ${OPENCLAW_OAUTH_COOKIE_SECRET} ${ANTHROPIC_API_KEY} ${SHADOWMAN_CUSTOM_NAME} ${SHADOWMAN_DISPLAY_NAME} ${MODEL_ENDPOINT} ${DEFAULT_AGENT_MODEL} ${GOOGLE_CLOUD_PROJECT} ${GOOGLE_CLOUD_LOCATION} ${TELEGRAM_ALLOW_FROM} ${MLFLOW_TRACKING_URI} ${MLFLOW_EXPERIMENT_ID} ${MLFLOW_TLS_INSECURE} ${OPENCLAW_IMAGE}'
+ENVSUBST_VARS='${CLUSTER_DOMAIN} ${OPENCLAW_PREFIX} ${OPENCLAW_NAMESPACE} ${OPENCLAW_GATEWAY_TOKEN} ${OPENCLAW_OAUTH_CLIENT_SECRET} ${OPENCLAW_OAUTH_COOKIE_SECRET} ${ANTHROPIC_API_KEY} ${GOOGLE_AI_API_KEY} ${SHADOWMAN_CUSTOM_NAME} ${SHADOWMAN_DISPLAY_NAME} ${MODEL_ENDPOINT} ${DEFAULT_AGENT_MODEL} ${GOOGLE_CLOUD_PROJECT} ${GOOGLE_CLOUD_LOCATION} ${TELEGRAM_ALLOW_FROM} ${MLFLOW_TRACKING_URI} ${MLFLOW_EXPERIMENT_ID} ${MLFLOW_TLS_INSECURE} ${OPENCLAW_IMAGE}'
 
 # Build generated/ directory: mirror source tree with templates processed
 GENERATED_DIR="$REPO_ROOT/generated"
@@ -694,6 +720,16 @@ else
     log_warn "Could not create OpenClaw OAuthClient (requires cluster-admin permissions)"
     log_warn "Ask your cluster admin to run:"
     echo "    oc apply -f $GENERATED_DIR/platform/overlays/openshift/oauthclient.yaml"
+  fi
+
+  # Cluster-scoped RBAC for agent cluster access (cross-namespace read-only queries)
+  log_info "Applying cluster-viewer RBAC..."
+  if $KUBECTL apply -f "$GENERATED_DIR/agents/openclaw/base/openclaw-cluster-viewer-rbac.yaml" 2>/dev/null; then
+    log_success "ClusterRole/ClusterRoleBinding openclaw-cluster-viewer applied"
+  else
+    log_warn "Could not apply cluster-viewer RBAC (requires cluster-admin permissions)"
+    log_warn "Ask your cluster admin to run:"
+    echo "    $KUBECTL apply -f $GENERATED_DIR/agents/openclaw/base/openclaw-cluster-viewer-rbac.yaml"
   fi
   echo ""
 fi

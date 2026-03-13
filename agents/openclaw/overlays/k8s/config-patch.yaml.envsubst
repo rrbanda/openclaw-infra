@@ -46,6 +46,23 @@ data:
               }
             ]
           },
+          "google": {
+            "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api": "openai-completions",
+            "apiKey": "${GOOGLE_AI_API_KEY}",
+            "models": [
+              {
+              "id": "gemini-2.5-flash",
+              "name": "Gemini 2.5 Flash",
+              "reasoning": false,
+              "input": ["text", "image"],
+              "cost": {"input": 0.15, "output": 0.60, "cacheRead": 0.0375, "cacheWrite": 0},
+              "contextWindow": 1048576,
+              "maxTokens": 65536,
+              "compat": {"supportsStore": false}
+              }
+            ]
+          },
           "anthropic": {
             "baseUrl": "https://api.anthropic.com",
             "api": "anthropic-messages",
@@ -56,7 +73,7 @@ data:
       "tools": {
         "exec": {
             "security": "allowlist",
-            "safeBins": ["cat", "curl", "jq"],
+            "safeBins": ["cat", "curl", "jq", "node"],
             "safeBinProfiles": {
               "cat": {},
               "curl": {"deniedFlags": ["-o", "--output", "-O", "--remote-name", "--upload-file", "-T"]}
@@ -71,7 +88,8 @@ data:
       "agents": {
         "defaults": {
           "workspace": "~/.openclaw/workspace",
-          "model": {"primary": "${DEFAULT_AGENT_MODEL}"}
+          "model": {"primary": "${DEFAULT_AGENT_MODEL}"},
+          "thinkingDefault": "off"
         },
         "list": [
           {

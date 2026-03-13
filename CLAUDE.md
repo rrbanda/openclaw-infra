@@ -249,6 +249,7 @@ All platforms emit OTLP traces to MLflow:
 | `OPENCLAW_GATEWAY_TOKEN` | Auto-generated | Gateway auth |
 | `CLUSTER_DOMAIN` | Auto-detected (OpenShift) or empty | Routes, OAuth redirects |
 | `ANTHROPIC_API_KEY` | User prompt (optional) | Agents using Claude |
+| `GOOGLE_AI_API_KEY` | User prompt (optional) | Agents using Gemini via Google AI Studio |
 | `MODEL_ENDPOINT` | User prompt or default | In-cluster model provider URL |
 | `VERTEX_ENABLED` | User prompt (default: `false`) | Google Vertex AI |
 | `VERTEX_PROVIDER` | User prompt (default: `google`) | `google` for Gemini, `anthropic` for Claude via Vertex |
@@ -256,7 +257,7 @@ All platforms emit OTLP traces to MLflow:
 | `A2A_ENABLED` | `--with-a2a` flag (default: `false`) | A2A communication |
 | `SHADOWMAN_CUSTOM_NAME` | User prompt in setup.sh (or setup-agents.sh) | Default agent ID |
 | `SHADOWMAN_DISPLAY_NAME` | User prompt in setup.sh (or setup-agents.sh) | Default agent display name |
-| `DEFAULT_AGENT_MODEL` | Derived from API key availability | Model ID for agents |
+| `DEFAULT_AGENT_MODEL` | Derived from API key availability (Anthropic > Google AI > Vertex > in-cluster) | Model ID for agents |
 
 ## Critical Files
 

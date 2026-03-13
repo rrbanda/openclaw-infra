@@ -181,6 +181,13 @@ if ! $K8S_MODE; then
   echo ""
 fi
 
+# Remove cluster-viewer RBAC (applies to both OpenShift and K8s)
+log_info "Removing cluster-viewer ClusterRoleBinding..."
+$KUBECTL delete clusterrolebinding "openclaw-cluster-viewer-${OPENCLAW_NAMESPACE}" 2>/dev/null && \
+  log_success "ClusterRoleBinding openclaw-cluster-viewer-${OPENCLAW_NAMESPACE} deleted" || \
+  log_warn "ClusterRoleBinding not found (already removed)"
+echo ""
+
 teardown_namespace "$OPENCLAW_NAMESPACE"
 
 # Optionally delete .env

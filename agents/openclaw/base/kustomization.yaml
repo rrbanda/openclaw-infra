@@ -18,6 +18,8 @@ resources:
 - openclaw-agent-card-configmap.yaml
 # A2A bridge (translates A2A JSON-RPC to OpenAI chat completions for Kagenti UI chat)
 - ../a2a-bridge
+# Agent cluster access RBAC (namespace-scoped read access for K8s API queries)
+- openclaw-cluster-reader-rbac.yaml
 # Agent ConfigMaps (core deployment includes only shadowman)
 - shadowman-agent.yaml
 # Additional agents (resource-optimizer, etc.) are deployed via setup-agents.sh
