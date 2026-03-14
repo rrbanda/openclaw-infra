@@ -196,13 +196,54 @@ for tpl in $(find "$REPO_ROOT/agents/openclaw/agents" -name '*.envsubst'); do
 done
 echo ""
 
-# Deploy agent configuration (overlay config patch)
-if ! $K8S_MODE; then
-  log_info "Deploying agent configuration..."
-  $KUBECTL apply -f "$GENERATED_DIR/agents/openclaw/agents/agents-config-patch.yaml"
-  log_success "Agent configuration deployed"
-  echo ""
+# Deploy agent configuration: merge agent list into existing ConfigMap
+# instead of replacing the entire config (which would overwrite platform-specific settings)
+log_info "Deploying agent configuration..."
+PATCH_CONFIG="$GENERATED_DIR/agents/openclaw/agents/agents-config-patch.yaml"
+EXISTING_JSON=$($KUBECTL get configmap openclaw-config -n "$OPENCLAW_NAMESPACE" -o jsonpath='{.data.openclaw\.json}' 2>/dev/null || echo "")
+
+if [ -n "$EXISTING_JSON" ]; then
+  # Merge: extract agent list + cron settings from patch, inject into existing config
+  MERGED_JSON=$(python3 -c "
+import json, yaml, sys
+
+with open('$PATCH_CONFIG') as f:
+    patch_docs = list(yaml.safe_load_all(f))
+    patch_config = None
+    for d in patch_docs:
+        if d and d.get('kind') == 'ConfigMap':
+            patch_config = json.loads(d['data']['openclaw.json'])
+            break
+
+existing = json.loads('''$EXISTING_JSON''')
+
+if patch_config:
+    existing['agents']['list'] = patch_config['agents']['list']
+    if 'cron' in patch_config:
+        existing['cron'] = patch_config['cron']
+    if 'session' in patch_config:
+        existing['session'] = patch_config['session']
+
+json.dump(existing, sys.stdout)
+" 2>/dev/null)
+
+  if [ -n "$MERGED_JSON" ]; then
+    echo "$MERGED_JSON" > /tmp/openclaw-merged-config.json
+    $KUBECTL create configmap openclaw-config -n "$OPENCLAW_NAMESPACE" \
+      --from-file=openclaw.json=/tmp/openclaw-merged-config.json \
+      --dry-run=client -o yaml | $KUBECTL apply -f -
+    rm -f /tmp/openclaw-merged-config.json
+    log_success "Agent configuration merged into existing config"
+  else
+    log_warn "Merge failed, falling back to full config replacement"
+    $KUBECTL apply -f "$PATCH_CONFIG"
+    log_success "Agent configuration deployed (full replacement)"
+  fi
+else
+  $KUBECTL apply -f "$PATCH_CONFIG"
+  log_success "Agent configuration deployed (fresh install)"
 fi
+echo ""
 
 # Assemble agent ConfigMaps from separate files (AGENTS.md, agent.json)
 # If an agent dir has separate AGENTS.md + agent.json, embed them into the ConfigMap YAML.

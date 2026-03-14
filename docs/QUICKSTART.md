@@ -15,8 +15,9 @@ running AI agents that can call tools, execute code, and interact with external 
 
 **OAuth integration** — OpenClaw's deployment includes an [oauth-proxy](https://github.com/openshift/oauth-proxy)
 sidecar that authenticates users against OpenShift's built-in OAuth server. No external identity provider to configure.
-If you can `oc login`, you can access your agent. The gateway uses `trusted-proxy` authentication — the OAuth proxy
-forwards your OpenShift username via `X-Forwarded-User` and the gateway accepts it automatically. No gateway token required.
+If you can `oc login`, you can access your agent. The gateway binds to loopback only and uses `auth.mode: "token"` — the
+OAuth proxy handles external authentication, and you enter the gateway token once in the UI (stored in browser localStorage).
+This also enables internal agent-to-agent messaging via `sessions_send`.
 
 **Security Context Constraints (SCCs)** — OpenShift's default `restricted-v2` SCC enforces a strict posture on every container:
 
@@ -41,11 +42,11 @@ and `capabilities.drop: [ALL]`.
                        │ oauth-proxy │ ◄── OpenShift OAuth
                        │  (port 8443)│     authenticates user
                        └──────┬──────┘
-                              │ adds X-Forwarded-User header
+                              │ proxies to gateway
                               ▼ http://localhost:18789
                        ┌─────────────┐
                        │   gateway   │ ◄── bind: loopback
-                       │ (port 18789)│     auth: trusted-proxy
+                       │ (port 18789)│     auth: token
                        └─────────────┘     read-only root
                        ┌─────────────┐     all caps dropped
                        │ init-config │ ◄── runs at start
@@ -109,7 +110,13 @@ Access URLs:
 ```
 
 Open the URL in your browser. OpenShift OAuth handles authentication — you'll be redirected to the OpenShift login page.
-After authenticating, the Control UI loads automatically. No gateway token is needed.
+After authenticating, the Control UI loads and prompts for the gateway token. The token is printed at the end of `setup.sh`
+output and saved in `.env`. Enter it once — it's stored in browser localStorage for future visits.
+
+```bash
+# Get your gateway token
+grep OPENCLAW_GATEWAY_TOKEN .env
+```
 
 ## What you get
 

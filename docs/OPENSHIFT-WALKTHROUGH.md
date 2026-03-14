@@ -13,11 +13,12 @@ output so you can verify each step succeeded before moving on.
 2. [Clone and Deploy](#2-clone-and-deploy)
 3. [First Access](#3-first-access)
 4. [Verify the Agent Works](#4-verify-the-agent-works)
-5. [What Got Deployed](#5-what-got-deployed)
-6. [Configuration Reference](#6-configuration-reference)
-7. [Troubleshooting](#7-troubleshooting)
-8. [Teardown](#8-teardown)
-9. [Known Issues and Limitations](#9-known-issues-and-limitations)
+5. [Deploy Additional Agents](#5-deploy-additional-agents)
+6. [What Got Deployed](#6-what-got-deployed)
+7. [Configuration Reference](#7-configuration-reference)
+8. [Troubleshooting](#8-troubleshooting)
+9. [Teardown](#9-teardown)
+10. [Known Issues and Limitations](#10-known-issues-and-limitations)
 
 ---
 
@@ -176,9 +177,16 @@ authentication. Log in with your OpenShift credentials (the same ones you used f
 - Connection status showing "Connected" (green)
 - A chat input area at the bottom
 
-**No gateway token is needed.** The OAuth proxy authenticates you via OpenShift and forwards your username
-to the gateway via the `X-Forwarded-User` header. The gateway is configured in `trusted-proxy` mode and
-accepts this header as authentication.
+**You'll see a gateway token prompt.** Enter the token that was printed at the end of `setup.sh` output.
+You can also retrieve it with:
+
+```bash
+grep OPENCLAW_GATEWAY_TOKEN .env
+```
+
+The token is stored in your browser's localStorage — you only need to enter it once. The gateway uses
+`auth.mode: "token"` which authenticates both browser connections and internal agent-to-agent messaging
+via `sessions_send`.
 
 ### If you see "Disconnected from gateway" or "device identity required"
 
@@ -234,7 +242,114 @@ curl -s -o /dev/null -w "%{http_code}" "https://$ROUTE"
 
 ---
 
-## 5. What Got Deployed
+## 5. Deploy Additional Agents
+
+OpenClaw supports multiple agents running side-by-side, each with its own persona, scheduled tasks,
+and the ability to message other agents. The repository includes pre-built showcase agents.
+
+### Available agents
+
+| Agent | Purpose | Schedule | Key Capability |
+|-------|---------|----------|----------------|
+| **Resource Optimizer** | Analyzes K8s resource usage, detects waste | Data: every 8h, Analysis: 9AM/5PM UTC | Inter-agent messaging — sends findings to your default agent |
+| **Repo Watcher** | Monitors openclaw/openclaw GitHub for changes | Every 2h | Public API queries via `curl`, no auth needed |
+| **MLOps Monitor** | Monitors ML model performance via MLflow | 10AM/4PM UTC | Requires MLflow (skipped if not deployed) |
+
+### Deploy all agents
+
+```bash
+./scripts/setup-agents.sh
+```
+
+The script prompts for:
+
+1. **Agent name customization** — press Enter to keep the default ("Shadowman")
+2. **MLflow URI** — press Enter to skip (unless you have MLflow deployed)
+
+**Expected output:**
+
+```
+✅ Agent configuration merged into existing config
+✅ 4 agent ConfigMaps deployed
+✅ Resource-optimizer RBAC, demo workloads, report ConfigMap, and CronJob applied
+✅ MLOps-monitor RBAC, report ConfigMap, and CronJob applied
+✅ OpenClaw ready with agents
+
+Agents deployed:
+  <prefix>_mlops_monitor
+  <prefix>_repo_watcher
+  <prefix>_resource_optimizer
+  <prefix>_shadowman (Shadowman)
+
+Cron jobs:
+  mlops-monitor-analysis: 0 10,16 * * *
+  repo-watcher-job: 0 */2 * * *
+  resource-optimizer-analysis: 0 9,17 * * *
+```
+
+### What gets deployed
+
+The script deploys:
+
+- **Agent ConfigMaps** with workspace files (AGENTS.md, agent.json) for each agent
+- **Demo workloads** in a `resource-demo` namespace for the Resource Optimizer to analyze
+  (api-gateway, redis-cache, ml-inference, batch-worker, etc.)
+- **RBAC** for the Resource Optimizer's ServiceAccount to read resources
+- **K8s CronJobs** for periodic data collection
+- **OpenClaw internal cron jobs** for agent analysis schedules
+- **NPS skill** for agent capability assessment
+
+### Verify agents appear in the UI
+
+After the script completes, refresh the OpenClaw UI. You should see all agents in the left sidebar:
+
+- Your default agent (e.g., Shadowman)
+- Resource Optimizer
+- Repo Watcher
+- MLOps Monitor
+
+### Test the Resource Optimizer
+
+Click on the Resource Optimizer agent and ask:
+
+```
+Read the latest resource report and tell me what you find.
+```
+
+The agent reads `/data/reports/resource-optimizer/report.txt` (populated by the K8s CronJob) and
+analyzes the demo workloads for waste, over-provisioning, or idle resources.
+
+### Test the Repo Watcher
+
+Click on the Repo Watcher agent and ask:
+
+```
+Check for recent activity on the openclaw GitHub repo.
+```
+
+The agent uses `curl` to query the GitHub API and reports recent commits, merged PRs, and releases.
+
+### Test inter-agent messaging
+
+Ask the Resource Optimizer:
+
+```
+Run your analysis and send the results to Shadowman.
+```
+
+Then switch to the Shadowman agent. You should see an incoming message with the Resource Optimizer's findings.
+
+### Add a custom agent
+
+```bash
+./scripts/add-agent.sh
+```
+
+This scaffolds a new agent from a template with its own workspace, ConfigMap, and cron job.
+
+---
+
+## 6. What Got Deployed
 
 ### Kubernetes resources
 
@@ -251,7 +366,10 @@ oc get all,configmap,secret,pvc,role,rolebinding -n alice-openclaw
 | **Service** | `openclaw` | ClusterIP service exposing ports 8443, 18789, 8080 |
 | **Route** | `openclaw` | TLS-terminated external URL targeting oauth-proxy (port 8443) |
 | **ConfigMap** | `openclaw-config` | Gateway configuration (models, tools, agents, auth) |
-| **ConfigMap** | `shadowman-agent` | Agent workspace files (AGENTS.md, TOOLS.md, etc.) |
+| **ConfigMap** | `shadowman-agent` | Default agent workspace files (AGENTS.md, TOOLS.md, etc.) |
+| **ConfigMap** | `resource-optimizer-agent` | Resource Optimizer workspace (added by `setup-agents.sh`) |
+| **ConfigMap** | `repo-watcher-agent` | Repo Watcher workspace (added by `setup-agents.sh`) |
+| **ConfigMap** | `mlops-monitor-agent` | MLOps Monitor workspace (added by `setup-agents.sh`) |
 | **Secret** | `openclaw-secrets` | API keys, gateway token |
 | **Secret** | `openclaw-oauth-config` | OAuth client secret, cookie secret |
 | **PVC** | `openclaw-home-pvc` | Persistent storage for config, sessions, workspaces |
@@ -307,7 +425,7 @@ The key indicators: `clients=1` (a browser is connected) and no error messages.
 
 ---
 
-## 6. Configuration Reference
+## 7. Configuration Reference
 
 ### Where config lives
 
@@ -330,6 +448,14 @@ To switch models without re-running setup:
 
 ### Add more agents
 
+To deploy the pre-built showcase agents (Resource Optimizer, Repo Watcher, etc.):
+
+```bash
+./scripts/setup-agents.sh
+```
+
+To create a brand new custom agent:
+
 ```bash
 ./scripts/add-agent.sh
 ```
@@ -338,31 +464,36 @@ This scaffolds a new agent from a template, creates its ConfigMap, installs work
 
 ---
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 ### "device identity required" or "Disconnected from gateway"
 
 **Cause:** The gateway doesn't recognize the connection as authenticated. This happens when:
 
-- `gateway.auth.mode` is not set to `"trusted-proxy"`
-- `gateway.auth.trustedProxy.userHeader` is missing or empty
-- `gateway.trustedProxies` doesn't include loopback CIDRs
+- The browser hasn't entered the gateway token (token mode requires it)
+- `gateway.auth.mode` is not set to `"token"` (other modes have compatibility issues)
+- `controlUi.dangerouslyDisableDeviceAuth` is not `true`
+- `controlUi.dangerouslyAllowHostHeaderOriginFallback` is not `true`
 - The Route targets the gateway port (18789) instead of the OAuth proxy port (8443)
 
-**Fix:** Verify the ConfigMap has the correct auth config:
+**Fix:** First, try clearing your browser's localStorage for the OpenClaw URL and re-entering the gateway token:
 
 ```bash
-oc get cm openclaw-config -n <namespace> -o jsonpath='{.data.openclaw\.json}' | python3 -m json.tool | grep -A5 '"auth"'
+grep OPENCLAW_GATEWAY_TOKEN .env
+```
+
+If still failing, verify the ConfigMap has the correct auth config:
+
+```bash
+oc get cm openclaw-config -n <namespace> -o jsonpath='{.data.openclaw\.json}' | python3 -m json.tool | grep -A3 '"auth"'
 ```
 
 Expected:
 
 ```json
 "auth": {
-    "mode": "trusted-proxy",
-    "trustedProxy": {
-        "userHeader": "X-Forwarded-User"
-    }
+    "mode": "token",
+    "allowTailscale": false
 }
 ```
 
@@ -373,6 +504,13 @@ oc get route openclaw -n <namespace> -o jsonpath='{.spec.port.targetPort}'
 ```
 
 Expected: `oauth-ui`
+
+**Why `auth.mode: "token"`?** Token mode is OpenClaw's default and works for both browser UI and
+internal agent-to-agent messaging. The browser enters the token once (stored in localStorage), and
+the internal gateway client uses the `OPENCLAW_GATEWAY_TOKEN` env var automatically. Do NOT use
+`"trusted-proxy"` mode — it breaks `sessions_send` because internal WebSocket connections lack the
+proxy user header. Do NOT use `"none"` mode — it rejects browser connections with "device identity
+required" because there's no code path to bypass the device check without shared auth.
 
 ### Agent says "Compacting context..." but never responds
 
@@ -399,9 +537,8 @@ oc logs deployment/openclaw -c gateway -n <namespace> --previous
 
 Common causes:
 
-- `gateway auth mode is trusted-proxy, but no trustedProxy config was provided` — the `gateway.auth.trustedProxy`
-  object is missing. It must be at `gateway.auth.trustedProxy`, NOT at `gateway.trustedProxy`.
-- `trustedProxy.userHeader is empty` — add `"userHeader": "X-Forwarded-User"` inside `gateway.auth.trustedProxy`.
+- Invalid JSON in `openclaw.json` — verify the ConfigMap content is valid JSON.
+- Missing required config keys — check the gateway container logs for the specific error message.
 
 ### Agent can't query cluster resources
 
@@ -447,7 +584,7 @@ The PVC will be recreated on the next pod start.
 
 ---
 
-## 8. Teardown
+## 9. Teardown
 
 ### Remove everything
 
@@ -493,7 +630,7 @@ If your `.env` was preserved, the script detects it and offers to reuse the exis
 
 ---
 
-## 9. Known Issues and Limitations
+## 10. Known Issues and Limitations
 
 ### Google AI Studio compatibility
 

@@ -170,6 +170,13 @@ data:
             "name": "${OPENCLAW_PREFIX}'s MLOps Monitor",
             "workspace": "~/.openclaw/workspace-${OPENCLAW_PREFIX}_mlops_monitor",
             "subagents": {"allowAgents": ["*"]}
+          },
+          {
+            "id": "${OPENCLAW_PREFIX}_repo_watcher",
+            "name": "Repo Watcher",
+            "workspace": "~/.openclaw/workspace-${OPENCLAW_PREFIX}_repo_watcher",
+            "model": {"primary": "${DEFAULT_AGENT_MODEL}"},
+            "subagents": {"allowAgents": ["*"]}
           }
         ]
       },

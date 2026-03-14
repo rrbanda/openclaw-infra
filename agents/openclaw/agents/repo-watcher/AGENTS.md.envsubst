@@ -20,27 +20,23 @@ to rebuild their images.
 
 ## How to Check
 
-Use `curl` and `jq` via the exec tool. The GitHub API is public,
-no authentication required.
+Use `curl` and `node -e` via the exec tool. The GitHub API is public,
+no authentication required. IMPORTANT: jq is NOT installed. Always use
+`node -e` for JSON processing.
 
-**Recent commits (last 2 hours):**
+**Recent commits (last 10):**
 ```
-curl -s "https://api.github.com/repos/openclaw/openclaw/commits?since=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)" | jq '[.[] | {sha: .sha[0:8], message: .commit.message | split("\n")[0], author: .commit.author.name, date: .commit.author.date}]'
+curl -s "https://api.github.com/repos/openclaw/openclaw/commits?per_page=10" | node -e "let d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{const items=JSON.parse(Buffer.concat(d));items.forEach(c=>console.log(c.sha.slice(0,8)+' '+c.commit.message.split('\n')[0]+' ('+c.commit.author.name+', '+c.commit.author.date+')'))})"
 ```
 
 **Recent merged PRs:**
 ```
-curl -s "https://api.github.com/repos/openclaw/openclaw/pulls?state=closed&sort=updated&direction=desc&per_page=5" | jq '[.[] | select(.merged_at != null) | {number, title, merged_at, user: .user.login}]'
+curl -s "https://api.github.com/repos/openclaw/openclaw/pulls?state=closed&sort=updated&direction=desc&per_page=5" | node -e "let d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{const items=JSON.parse(Buffer.concat(d)).filter(p=>p.merged_at);items.forEach(p=>console.log('#'+p.number+' '+p.title+' (merged: '+p.merged_at+', by: '+p.user.login+')'))})"
 ```
 
 **Latest release:**
 ```
-curl -s "https://api.github.com/repos/openclaw/openclaw/releases/latest" | jq '{tag: .tag_name, name: .name, published: .published_at}'
-```
-
-If `date -d` does not work (macOS), use:
-```
-curl -s "https://api.github.com/repos/openclaw/openclaw/commits?per_page=10" | jq '[.[] | {sha: .sha[0:8], message: .commit.message | split("\n")[0], author: .commit.author.name, date: .commit.author.date}]'
+curl -s "https://api.github.com/repos/openclaw/openclaw/releases/latest" | node -e "let d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{const r=JSON.parse(Buffer.concat(d));console.log('Tag: '+r.tag_name+'\nName: '+r.name+'\nPublished: '+r.published_at)})"
 ```
 
 ## Reporting
