@@ -1,16 +1,14 @@
-# openclaw-k8s
+# openclaw-infra
 
 Deploy [OpenClaw](https://github.com/openclaw) on Kubernetes, OpenShift, and standalone Linux machines.
 
-> All deployments use the `quay.io/aicatalyst/openclaw:latest` container image, which tracks upstream `openclaw/openclaw` main and adds full OpenTelemetry instrumentation via the `diagnostics-otel` extension. This ensures every agent action — tool calls, LLM inference, message lifecycle — is traced end-to-end in MLflow.
->
-> **Note:** Until GitHub Actions CI is set up for automated builds, deployments default to `quay.io/sallyom/openclaw:latest`. Override via `OPENCLAW_IMAGE` env var.
+> Default image: `quay.io/sallyom/openclaw:latest`. Override with the `OPENCLAW_IMAGE` env var.
 
 ## Deployment Targets
 
 | Target | Setup | Docs |
 |--------|-------|------|
-| **OpenShift** | `./scripts/setup.sh` | This README |
+| **OpenShift** | `./scripts/setup.sh` | [Quickstart](docs/QUICKSTART.md) / [Full Walkthrough](docs/OPENSHIFT-WALKTHROUGH.md) |
 | **Vanilla Kubernetes** | `./scripts/setup.sh --k8s` | This README |
 | **Standalone Linux** (Fedora/RHEL) | `agents/openclaw/edge/scripts/setup-edge.sh` | [edge/README.md](agents/openclaw/edge/README.md) |
 
@@ -29,7 +27,7 @@ Deploy [OpenClaw](https://github.com/openclaw) on Kubernetes, OpenShift, and sta
 The script prompts for:
 - **Namespace prefix** (e.g., `sally`) — creates `sally-openclaw` namespace
 - **Agent name** (e.g., `Lynx`) — your agent's display name
-- **API keys** (optional — without them, agents use the in-cluster model)
+- **API key** — at least one model provider key is needed. [Google AI Studio](https://aistudio.google.com/app/apikey) offers free keys. Without a key, agents fall back to an in-cluster vLLM endpoint that must be deployed separately.
 
 ```
  ┌──────────────────────────────┐
@@ -65,6 +63,7 @@ kubectl port-forward svc/openclaw 18789:18789 -n <prefix>-openclaw
 | Script | Purpose |
 |--------|---------|
 | `./scripts/setup.sh` | Deploy OpenClaw (add `--with-a2a` for A2A) |
+| `./scripts/setup-agents.sh` | Deploy pre-built showcase agents (Resource Optimizer, Repo Watcher) |
 | `./scripts/add-agent.sh` | Create and deploy a custom agent |
 | `./scripts/export-config.sh` | Export live config from running pod |
 | `./scripts/update-jobs.sh` | Update cron jobs without full re-deploy |
@@ -156,7 +155,7 @@ The init container overwrites config on every pod restart. Export before restart
 ## Repository Structure
 
 ```
-openclaw-k8s/
+openclaw-infra/
 ├── platform/                   # Generic trusted A2A network platform
 │   ├── base/                   # Namespace scaffolding, RBAC, quotas, PVCs, PDB
 │   ├── auth-identity-bridge/   # AgentCard CR + SCC (Kagenti webhook handles sidecars)

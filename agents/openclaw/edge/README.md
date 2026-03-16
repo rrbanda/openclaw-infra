@@ -12,8 +12,8 @@ Deploy OpenClaw as a rootless podman Quadlet on a Linux machine (Fedora, RHEL 9+
 ## Quick Start
 
 ```bash
-git clone https://github.com/redhat-et/openclaw-k8s.git
-cd openclaw-k8s/agents/openclaw/edge
+git clone https://github.com/rrbanda/openclaw-infra.git
+cd openclaw-infra/agents/openclaw/edge
 ./scripts/setup-edge.sh
 ```
 

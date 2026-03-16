@@ -82,8 +82,8 @@ will print the exact commands to give your admin.
 ## Deploy
 
 ```bash
-git clone https://github.com/redhat-et/openclaw-k8s.git
-cd openclaw-k8s
+git clone https://github.com/rrbanda/openclaw-infra.git
+cd openclaw-infra
 ./scripts/setup.sh
 ```
 
@@ -187,6 +187,6 @@ Your `.env` is kept unless you pass `--delete-env`.
 
 ## Links
 
-- **Repository**: [github.com/redhat-et/openclaw-k8s](https://github.com/redhat-et/openclaw-k8s)
+- **Repository**: [github.com/rrbanda/openclaw-infra](https://github.com/rrbanda/openclaw-infra)
 - **OpenClaw**: [github.com/openclaw](https://github.com/openclaw)
 - **Kagenti** (zero-trust A2A): [github.com/kagenti/kagenti](https://github.com/kagenti/kagenti)

@@ -147,7 +147,7 @@ teardown_namespace() {
   else
     log_warn "Namespace deletion timed out — removing finalizers..."
     $KUBECTL get namespace "$ns" -o json | \
-      jq '.spec.finalizers = []' | \
+      python3 -c "import json,sys; d=json.load(sys.stdin); d['spec']['finalizers']=[]; json.dump(d,sys.stdout)" | \
       $KUBECTL replace --raw "/api/v1/namespaces/$ns/finalize" -f - 2>/dev/null || true
     # Wait briefly for it to disappear
     sleep 3

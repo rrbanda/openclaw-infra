@@ -70,8 +70,8 @@ You need an API key for at least one model provider:
 ### Clone the repository
 
 ```bash
-git clone https://github.com/redhat-et/openclaw-k8s.git
-cd openclaw-k8s
+git clone https://github.com/rrbanda/openclaw-infra.git
+cd openclaw-infra
 ```
 
 ### Run setup.sh

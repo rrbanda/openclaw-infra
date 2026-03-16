@@ -87,8 +87,8 @@ The OAuthClient is a cluster-scoped resource. If you don't have cluster-admin, t
 ## Deploy
 
 ```bash
-git clone https://github.com/redhat-et/openclaw-k8s.git
-cd openclaw-k8s
+git clone https://github.com/rrbanda/openclaw-infra.git
+cd openclaw-infra
 ./scripts/setup.sh
 ```
 
@@ -178,11 +178,11 @@ Removes the namespace, all resources, the OAuthClient, and the `generated/` dire
 | Create a custom agent | `./scripts/add-agent.sh` |
 | Add scheduled jobs | Create a `JOB.md` in your agent directory, run `./scripts/update-jobs.sh` |
 | Enable observability | `./scripts/deploy-otelcollector.sh` (requires OTEL Operator + MLflow) |
-| Connect agents across clusters | Redeploy with `./scripts/setup.sh --with-a2a` to enable zero-trust agent-to-agent communication via [Google A2A](https://github.com/google/A2A) protocol with [Kagenti](https://github.com/kagenti/kagenti) (SPIFFE/SPIRE + Keycloak). See [A2A-ARCHITECTURE.md](https://github.com/redhat-et/openclaw-k8s/blob/main/docs/A2A-ARCHITECTURE.md) |
-| Full architecture docs | [TEAMMATE-QUICKSTART.md](https://github.com/redhat-et/openclaw-k8s/blob/main/docs/TEAMMATE-QUICKSTART.md) |
+| Connect agents across clusters | Redeploy with `./scripts/setup.sh --with-a2a` to enable zero-trust agent-to-agent communication via [Google A2A](https://github.com/google/A2A) protocol with [Kagenti](https://github.com/kagenti/kagenti) (SPIFFE/SPIRE + Keycloak). See [A2A-ARCHITECTURE.md](https://github.com/rrbanda/openclaw-infra/blob/main/docs/A2A-ARCHITECTURE.md) |
+| Full architecture docs | [TEAMMATE-QUICKSTART.md](https://github.com/rrbanda/openclaw-infra/blob/main/docs/TEAMMATE-QUICKSTART.md) |
 
 ## Links
 
-- **Repository**: [github.com/redhat-et/openclaw-k8s](https://github.com/redhat-et/openclaw-k8s)
+- **Repository**: [github.com/rrbanda/openclaw-infra](https://github.com/rrbanda/openclaw-infra)
 - **OpenClaw**: [github.com/openclaw](https://github.com/openclaw)
 - **Kagenti** (zero-trust A2A): [github.com/kagenti/kagenti](https://github.com/kagenti/kagenti)

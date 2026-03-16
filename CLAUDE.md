@@ -99,7 +99,7 @@ All scripts accept `--k8s` for vanilla Kubernetes and `--env-file <path>` for cu
 The repo is organized into two top-level concerns: **platform** (generic trusted A2A network infrastructure) and **agents** (pluggable agent implementations). OpenClaw is the reference agent implementation.
 
 ```
-openclaw-k8s/
+openclaw-infra/
 ├── platform/                           # Generic trusted A2A network platform
 │   ├── base/                           # Namespace scaffolding, RBAC, quotas, PVCs, PDB
 │   ├── auth-identity-bridge/           # AgentCard CR + SCC (Kagenti webhook handles sidecars)

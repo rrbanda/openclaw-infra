@@ -23,7 +23,7 @@ OpenClaw agents need an LLM endpoint. You have several options:
 
 ```bash
 git clone <this-repo>
-cd openclaw-k8s
+cd openclaw-infra
 
 ./scripts/setup.sh           # OpenShift
 ./scripts/setup.sh --k8s     # Kubernetes (KinD, minikube, etc.)

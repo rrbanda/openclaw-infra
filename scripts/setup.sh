@@ -124,6 +124,18 @@ echo ""
 # Check prerequisites
 log_info "Checking prerequisites..."
 
+MISSING_TOOLS=()
+for tool in python3 envsubst rsync openssl; do
+  if ! command -v "$tool" &> /dev/null; then
+    MISSING_TOOLS+=("$tool")
+  fi
+done
+if [ ${#MISSING_TOOLS[@]} -gt 0 ]; then
+  log_error "Missing required tools: ${MISSING_TOOLS[*]}"
+  log_error "Install them first (e.g., 'brew install gettext coreutils' on macOS, 'dnf install python3 gettext rsync openssl' on RHEL/Fedora)"
+  exit 1
+fi
+
 if $K8S_MODE; then
   if ! command -v kubectl &> /dev/null; then
     log_error "kubectl CLI not found. Please install it first."
