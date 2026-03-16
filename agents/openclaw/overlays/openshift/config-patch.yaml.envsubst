@@ -6,13 +6,6 @@ metadata:
 data:
   openclaw.json: |
     {
-      "plugins": {
-        "allow": ["diagnostics-otel", "memory-core"],
-        "entries": {
-          "diagnostics-otel": {"enabled": true},
-          "memory-core": {"enabled": true}
-        }
-      },
       "gateway": {
         "mode": "local",
         "bind": "loopback",
@@ -27,16 +20,6 @@ data:
           "allowedOrigins": ["https://openclaw-${OPENCLAW_NAMESPACE}.${CLUSTER_DOMAIN}"]
         },
         "http": {"endpoints": {"chatCompletions": {"enabled": true}}}
-      },
-      "diagnostics": {
-        "enabled": true,
-        "otel": {
-          "enabled": true,
-          "endpoint": "http://localhost:4318",
-          "traces": true,
-          "metrics": true,
-          "logs": false
-        }
       },
       "models": {
         "providers": {
@@ -102,8 +85,10 @@ data:
             "safeBinProfiles": {
               "cat": {},
               "curl": {"deniedFlags": ["-o", "--output", "-O", "--remote-name", "--upload-file", "-T"]},
-              "jq": {"maxPositional": 1, "allowedValueFlags": ["--arg", "--argjson", "--argstr"], "deniedFlags": ["--argfile", "--rawfile", "--slurpfile", "--from-file", "--library-path", "-L", "-f"]}
+              "jq": {"maxPositional": 1, "allowedValueFlags": ["--arg", "--argjson", "--argstr"], "deniedFlags": ["--argfile", "--rawfile", "--slurpfile", "--from-file", "--library-path", "-L", "-f"]},
+              "node": {"deniedFlags": ["--inspect", "--inspect-brk"], "maxPositional": 0, "allowedValueFlags": ["-e", "--eval"]}
             },
+            "safeBinTrustedDirs": ["/usr/local/bin"],
             "timeoutSec": 30
           },
         "agentToAgent": {
