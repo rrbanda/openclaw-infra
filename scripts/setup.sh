@@ -579,8 +579,9 @@ for tpl in $(find "$REPO_ROOT/agents" "$REPO_ROOT/platform" -name '*.envsubst');
 done
 echo ""
 
-# Strip Telegram channel config when disabled (empty allowFrom fails validation)
-if [ "${TELEGRAM_ENABLED:-false}" != "true" ]; then
+# Strip Telegram channel config when disabled or when allowFrom is empty
+# (empty allowFrom with dmPolicy=allowlist crashes the gateway)
+if [ "${TELEGRAM_ENABLED:-false}" != "true" ] || [ -z "${TELEGRAM_ALLOW_FROM:-}" ]; then
   for cfg in "$GENERATED_DIR/agents/openclaw/overlays"/*/config-patch.yaml; do
     if [ -f "$cfg" ]; then
       python3 -c "
