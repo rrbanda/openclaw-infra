@@ -1,10 +1,10 @@
-# Per-Agent Sandbox Isolation for OpenClaw on OpenShift
+# Per-Human Sandbox Isolation for OpenClaw on OpenShift
 
-> Design document for running OpenClaw agents in isolated Agent Sandbox pods with defense-in-depth security, informed by NVIDIA NemoClaw's security model and the Kubernetes Agent Sandbox operator.
+> Design document for running each human user's OpenClaw instance in an isolated Agent Sandbox pod with defense-in-depth security, informed by NVIDIA NemoClaw's security model and the Kubernetes Agent Sandbox operator.
 
-**Status:** Proposal  
+**Status:** Proposal
 **Author:** RB
-**Date:** 2026-03-21  
+**Date:** 2026-03-21
 **Related:**
 - [Agent Sandbox (kubernetes-sigs)](https://agent-sandbox.sigs.k8s.io/)
 - [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw) / [Docs](https://docs.nvidia.com/nemoclaw/latest/)
@@ -12,46 +12,58 @@
 
 ---
 
-## 1. Problem Statement
+## 1. Core Principle
 
-OpenClaw agents are **in-process identities** inside a single Node.js gateway. All agents share one process, one PVC, one set of secrets, and one network namespace. A compromised or misbehaving agent can:
+**OpenClaw agents own the computer they run on.** An agent can read any file, run any process, and access any resource on its machine -- bare metal, VM, or container. Security comes from controlling **what that machine can reach on the network** and **who else shares it**, not from restricting the agent inside the machine.
 
-- Read other agents' workspace data and session transcripts
-- Access API keys and tokens belonging to other agents (e.g., `OC_TOKEN` for resource_optimizer)
-- Make arbitrary network calls to any endpoint
-- Modify the gateway config or other agents' files
+This is the same model [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw) uses: the entire gateway is one sandbox. Isolation is between sandboxes (between humans), not within them (between agents).
 
-This is the same problem [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw) addresses for workstations (wrapping the entire gateway in an OpenShell sandbox), but we need a **Kubernetes-native solution** that provides **per-agent isolation** -- not just per-gateway.
+## 2. Problem Statement
 
-## 2. Current Architecture
+OpenClaw on OpenShift already uses per-user namespaces (`<prefix>-openclaw`). Each user gets their own gateway pod, PVC, secrets, and network space. But the current `Deployment`-based model lacks:
+
+- **Resource efficiency at scale** -- 100 users = 100 pods running 24/7, most idle
+- **Fast onboarding** -- New users wait for image pull + init container + readiness (~60-90s)
+- **Hardware isolation** -- Users share the same kernel via `runc`; container escape = access to other users' data
+- **Network control** -- No `NetworkPolicy`; a compromised gateway can reach any endpoint in the cluster or internet
+- **Lifecycle management** -- No automatic expiry for demo/trial users; no scale-to-zero for idle users
+- **Standardized provisioning** -- Each user's pod is created from raw templates; no reusable blueprint
+
+## 3. Current Architecture
 
 ```
-┌─────────────────── Sandbox CR: openclaw ───────────────────┐
-│                                                             │
-│  ┌──────────┐  ┌──────────────────────┐  ┌──────────────┐  │
-│  │ oauth-   │  │  Gateway (Node.js)   │  │  agent-card  │  │
-│  │ proxy    │  │                      │  │  (A2A bridge) │  │
-│  │ :8443    │  │  shadowman agent  ───┼──┤              │  │
-│  │          │  │  resource_optimizer──┼──┤  :8080       │  │
-│  │          │  │  mlops_monitor    ───┼──┤              │  │
-│  │          │  │                      │  │              │  │
-│  │          │  │  :18789              │  │              │  │
-│  └──────────┘  └──────────┬───────────┘  └──────────────┘  │
-│                           │                                 │
-│                  ┌────────┴────────┐                        │
-│                  │ openclaw-home-  │                        │
-│                  │ pvc (shared)    │                        │
-│                  └─────────────────┘                        │
-└─────────────────────────────────────────────────────────────┘
+   setup.sh creates per-user namespace + Sandbox CR
+
+   raghu-openclaw namespace                    sally-openclaw namespace
+┌─────────────── Sandbox: openclaw ──────┐  ┌─────────────── Sandbox: openclaw ──────┐
+│                                        │  │                                        │
+│  ┌──────────┐ ┌─────────┐ ┌────────┐  │  │  ┌──────────┐ ┌─────────┐ ┌────────┐  │
+│  │ oauth-   │ │ gateway │ │ agent- │  │  │  │ oauth-   │ │ gateway │ │ agent- │  │
+│  │ proxy    │ │ (agents │ │ card   │  │  │  │ proxy    │ │ (agents │ │ card   │  │
+│  │          │ │  run    │ │ (A2A)  │  │  │  │          │ │  run    │ │ (A2A)  │  │
+│  │          │ │  here)  │ │        │  │  │  │          │ │  here)  │ │        │  │
+│  └──────────┘ └────┬────┘ └────────┘  │  │  └──────────┘ └────┬────┘ └────────┘  │
+│                    │                  │  │                    │                  │
+│               ┌────┴────┐             │  │               ┌────┴────┐             │
+│               │ PVC     │             │  │               │ PVC     │             │
+│               │ (owned) │             │  │               │ (owned) │             │
+│               └─────────┘             │  │               └─────────┘             │
+│                                        │  │                                        │
+│  No NetworkPolicy                      │  │  No NetworkPolicy                      │
+│  No lifecycle controls                 │  │  No lifecycle controls                 │
+│  runc runtime (shared kernel)          │  │  runc runtime (shared kernel)          │
+└────────────────────────────────────────┘  └────────────────────────────────────────┘
 ```
 
-**All agents share:** process, memory, filesystem (PVC), secrets, network namespace, and API keys.
+**What works:** Each user already has their own pod, PVC, secrets, and agents. Agents within a user's pod share process/memory/filesystem, but that's fine -- they all belong to the same human.
 
-## 3. Industry Context
+**What's missing:** The surrounding infrastructure for scale, security, and lifecycle.
 
-### 3.1 NVIDIA NemoClaw (Workstation Pattern)
+## 4. Industry Context
 
-NemoClaw runs the entire OpenClaw gateway inside an [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandbox with four isolation layers:
+### 4.1 NVIDIA NemoClaw (Workstation Pattern)
+
+NemoClaw wraps the entire OpenClaw gateway in an [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandbox:
 
 | Layer | Mechanism | What It Controls |
 |-------|-----------|-----------------|
@@ -60,148 +72,193 @@ NemoClaw runs the entire OpenClaw gateway inside an [NVIDIA OpenShell](https://g
 | **Process** | seccomp + netns + dedicated user | No privilege escalation, restricted syscalls |
 | **Inference** | Gateway-intercepted routing | All LLM calls proxied through controlled backend |
 
-**Key policy design from NemoClaw** (source: `nemoclaw-blueprint/policies/openclaw-sandbox.yaml`):
+**Key insight from NemoClaw:** The sandbox IS the gateway. All agents in the gateway share the sandbox. The isolation boundary is between gateways (between users), not between agents. This design applies the same principle using Kubernetes-native mechanisms.
 
-- Per-binary network rules: `openclaw` binary can reach `clawhub.com` and `openclaw.ai`; `claude` binary can reach `api.anthropic.com`; `gh`/`git` can reach `github.com`
-- Operator approval flow for unlisted destinations (real-time TUI prompt)
-- Inference never leaves sandbox directly -- routed through OpenShell gateway
-
-**Limitation:** NemoClaw provides per-gateway isolation, not per-agent. All agents in the same gateway share the sandbox. It targets workstations, not Kubernetes.
-
-### 3.2 Kubernetes Agent Sandbox (Cluster Pattern)
+### 4.2 Kubernetes Agent Sandbox (Cluster Pattern)
 
 The [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) operator provides:
 
 - `Sandbox` CR: singleton stateful pod with stable identity and persistent storage
-- `SandboxTemplate`: reusable pod blueprints with built-in `NetworkPolicy` support
-- `SandboxClaim`: user/automation requests a sandbox from a template
-- `SandboxWarmPool`: pre-warmed pods for instant allocation
+- `SandboxTemplate`: reusable pod blueprints with built-in `NetworkPolicy` support and `networkPolicyManagement` (Managed/Unmanaged)
+- `SandboxClaim`: user/automation requests a sandbox from a template, with optional `lifecycle.shutdownTime` for auto-expiry
+- `SandboxWarmPool`: pre-warmed pods for instant allocation (supports HPA on `spec.replicas`)
 - Runtime class support: gVisor (GKE default) or Kata Containers (OpenShift)
-
-**Key capability:** The `SandboxTemplate.spec.networkPolicy` field accepts standard Kubernetes `NetworkPolicyIngressRule` and `NetworkPolicyEgressRule` objects. The controller auto-creates a shared NetworkPolicy per template with default-deny posture.
+- Status: `serviceFQDN` published automatically for each Sandbox
 
 **Cluster state:** Agent Sandbox controller v0.2.1 is running on the target OpenShift cluster with all 4 CRDs registered and extensions enabled. Kata RuntimeClass is available on all nodes.
 
-## 4. Proposed Architecture
+## 5. Proposed Architecture
 
-Combine NemoClaw's security philosophy (defense-in-depth, default-deny, inference routing) with Agent Sandbox's Kubernetes-native isolation (per-pod sandboxes, NetworkPolicy, warm pools).
+Each human gets a `SandboxClaim` from a shared `SandboxTemplate`. The template defines the pod spec, NetworkPolicy, and (optionally) Kata runtime. A `SandboxWarmPool` keeps pre-warmed instances ready for instant allocation.
 
 ```
-┌────────────────── Sandbox CR: openclaw-gateway ──────────────────┐
-│                                                                   │
-│  ┌──────────┐  ┌────────────────────────┐  ┌──────────────────┐  │
-│  │ oauth-   │  │  Gateway (Node.js)     │  │  inference-proxy │  │
-│  │ proxy    │  │                        │  │  (routes LLM     │  │
-│  │ :8443    │  │  shadowman agent       │  │   calls to       │  │
-│  │          │  │  (interactive, trusted) │  │   providers)     │  │
-│  │          │  │                        │  │  :18792          │  │
-│  └──────────┘  └───────────┬────────────┘  └──────────────────┘  │
-│                            │                                      │
-│                   SandboxClaim API                                │
-│                            │                                      │
-└────────────────────────────┼──────────────────────────────────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-              ▼              ▼              ▼
-┌─────────────────┐ ┌───────────────┐ ┌──────────────────┐
-│ SandboxClaim:   │ │ SandboxClaim: │ │ SandboxClaim:    │
-│ resource_       │ │ mlops_        │ │ user_added_      │
-│ optimizer       │ │ monitor       │ │ agent            │
-│                 │ │               │ │                  │
-│ ┌─────────────┐ │ │ ┌───────────┐ │ │ ┌──────────────┐ │
-│ │ Agent       │ │ │ │ Agent     │ │ │ │ Agent        │ │
-│ │ Runtime     │ │ │ │ Runtime   │ │ │ │ Runtime      │ │
-│ │ (own PVC,   │ │ │ │ (own PVC, │ │ │ │ (own PVC,    │ │
-│ │  own secrets)│ │ │ │  own keys)│ │ │ │  own secrets) │ │
-│ └─────────────┘ │ │ └───────────┘ │ │ └──────────────┘ │
-│                 │ │               │ │                  │
-│ NetworkPolicy:  │ │ NetworkPolicy │ │ NetworkPolicy    │
-│ gateway + model │ │ gateway +     │ │ gateway + model  │
-│ API only        │ │ MLflow only   │ │ API only         │
-└─────────────────┘ └───────────────┘ └──────────────────┘
-        │                   │                   │
-   ┌────┴────┐         ┌───┴───┐          ┌────┴────┐
-   │ own PVC │         │ own   │          │ own PVC │
-   │ (10Gi)  │         │ PVC   │          │ (10Gi)  │
-   └─────────┘         └───────┘          └─────────┘
+                   SandboxTemplate: openclaw-user
+                   ├── Pod spec (gateway + oauth-proxy + agent-card + init-config)
+                   ├── NetworkPolicy (default-deny egress + allowlist)
+                   └── Kata RuntimeClass (optional)
+                            │
+              ┌─────────────┼──────────────┬───────────────┐
+              │             │              │               │
+              ▼             ▼              ▼               ▼
+        SandboxClaim:  SandboxClaim:  SandboxClaim:  SandboxWarmPool:
+        raghu          sally          bob            openclaw-warmpool
+              │             │              │               │
+              ▼             ▼              ▼               ▼
+        ┌──────────┐  ┌──────────┐  ┌──────────┐   ┌──────────┐
+        │ Sandbox  │  │ Sandbox  │  │ Sandbox  │   │ 3 warm   │
+        │ pod      │  │ pod      │  │ pod      │   │ pods     │
+        │ (raghu's │  │ (sally's │  │ (bob's   │   │ (ready   │
+        │  agents) │  │  agents) │  │  agents) │   │  to      │
+        │          │  │          │  │          │   │  adopt)   │
+        │ PVC      │  │ PVC      │  │ PVC      │   │          │
+        └──────────┘  └──────────┘  └──────────┘   └──────────┘
+              │             │              │
+         NetworkPolicy  NetworkPolicy  NetworkPolicy
+         (shared, per-template, auto-managed by controller)
 ```
 
-### 4.1 Trust Model
+### 5.1 What Each User Gets
 
-| Agent Type | Where It Runs | Why |
-|-----------|---------------|-----|
-| **Interactive** (shadowman) | Supervisor gateway | Low latency needed; user-controlled; lowest risk |
-| **Scheduled/automated** (resource_optimizer, mlops_monitor) | Own Sandbox, own PVC | Runs unattended with elevated permissions (K8s tokens); highest risk |
-| **User-added agents** (via add-agent.sh) | Own Sandbox, own PVC | Unknown trust level; should be isolated by default |
+Every user's Sandbox pod is identical to what `setup.sh` deploys today:
 
-### 4.2 Security Layers (NemoClaw-Inspired)
+| Component | Purpose |
+|-----------|---------|
+| `oauth-proxy` container | OpenShift authentication |
+| `gateway` container | Node.js OpenClaw gateway with all user's agents |
+| `agent-card` container | A2A bridge for Kagenti |
+| `init-config` init container | Seeds config from ConfigMap to PVC |
+| PVC | Persistent workspace, session transcripts, agent data |
+| Secrets | User-specific API keys, gateway token |
+
+Agents within the pod share process, memory, filesystem, and secrets. This is intentional -- they all belong to the same human. The agent "owns" its computer.
+
+### 5.2 Security Layers (NemoClaw-Inspired)
 
 | Layer | Implementation on OpenShift |
 |-------|---------------------------|
-| **Network** | `SandboxTemplate.spec.networkPolicy` with default-deny egress; allow only gateway inference proxy + specific external APIs |
-| **Filesystem** | Per-agent PVC via `volumeClaimTemplates`; `readOnlyRootFilesystem: true`; no access to other agents' data |
-| **Process** | Kata RuntimeClass (VM-level isolation); `runAsNonRoot: true`; `allowPrivilegeEscalation: false` |
-| **Inference** | All LLM API calls routed through gateway's inference proxy; agent sandboxes cannot reach model APIs directly |
-| **Secrets** | Per-agent secrets; no shared `openclaw-secrets`; each agent only gets the keys it needs |
+| **Network** | `SandboxTemplate.spec.networkPolicy` with default-deny egress; allow only DNS + model API endpoints + cluster services |
+| **Filesystem** | Per-user PVC; `readOnlyRootFilesystem: true` on all containers; no cross-user filesystem access |
+| **Process** | Kata RuntimeClass (VM-level isolation between users); `runAsNonRoot: true`; `allowPrivilegeEscalation: false` |
+| **Secrets** | Per-user secrets in per-user namespace; no shared secrets across users |
+| **Lifecycle** | `SandboxClaim.lifecycle.shutdownTime` for auto-expiry; scale-to-zero for idle users |
 
-### 4.3 Communication Flow
+### 5.3 Scale Model
 
-```
-User ──► OAuth Proxy ──► Gateway ──► Agent Sandbox (via headless Service DNS)
-                            │
-                            ├── resource_optimizer.raghu-openclaw.svc.cluster.local
-                            ├── mlops_monitor.raghu-openclaw.svc.cluster.local
-                            └── <agent_name>.raghu-openclaw.svc.cluster.local
-```
+| Scenario | Mechanism |
+|----------|-----------|
+| **100 humans, 100 pods** | Each user has a SandboxClaim; controller manages pods |
+| **80 idle, 20 active** | Idle users scaled to zero (`spec.replicas: 0`); PVC preserved; 80% resource savings |
+| **New user onboards** | SandboxClaim adopts a pre-warmed pod from WarmPool; ready in seconds, not minutes |
+| **Trial expires** | `lifecycle.shutdownTime` on SandboxClaim; controller auto-deletes when reached |
+| **User returns after idle** | Scale back to 1; init container re-seeds config from ConfigMap; PVC data intact |
 
-The gateway communicates with agent sandboxes via the headless Service that the Sandbox controller creates for each Sandbox CR. Each sandbox's FQDN is `<sandbox-name>.<namespace>.svc.cluster.local`.
+## 6. Implementation Phases
 
-## 5. Implementation Phases
+### Phase 1: SandboxTemplate + NetworkPolicy
 
-### Phase 1: Agent SandboxTemplate + NetworkPolicy
-
-Create the foundational `SandboxTemplate` that defines how agent sandboxes are provisioned.
+Create the `SandboxTemplate` that defines how user sandboxes are provisioned. The pod spec is derived directly from the existing `openclaw-sandbox.yaml.envsubst`.
 
 **New files:**
 
-`platform/agent-sandbox/agent-sandbox-template.yaml.envsubst`:
+`platform/agent-sandbox/openclaw-user-template.yaml.envsubst`:
 
 ```yaml
 apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
-  name: openclaw-agent-template
+  name: openclaw-user
   namespace: ${OPENCLAW_NAMESPACE}
 spec:
   podTemplate:
     metadata:
       labels:
-        app: openclaw-agent
-        openclaw.dev/role: agent
+        app: openclaw
+        kagenti.io/type: agent
+        kagenti.io/protocol: a2a
+        kagenti.io/inject: ${KAGENTI_INJECT:-disabled}
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '18789'
+        sidecar.opentelemetry.io/inject: "openclaw-sidecar"
     spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+      serviceAccountName: openclaw-oauth-proxy
+      initContainers:
+      - name: init-config
+        image: registry.redhat.io/ubi9-minimal:latest
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            memory: 64Mi
+            cpu: 50m
+          limits:
+            memory: 128Mi
+            cpu: 200m
+        command:
+        - sh
+        - -c
+        - |
+          cp /config/openclaw.json /home/node/.openclaw/openclaw.json
+          chmod 644 /home/node/.openclaw/openclaw.json
+          mkdir -p /home/node/.openclaw/workspace
+          mkdir -p /home/node/.openclaw/skills
+          mkdir -p /home/node/.openclaw/cron
+          mkdir -p /home/node/.openclaw/agents
+          grep -o '"id": *"[^"]*"' /config/openclaw.json | \
+            sed 's/"id": *"//;s/"$//' | while read agent_id; do
+            mkdir -p "/home/node/.openclaw/agents/$agent_id/sessions"
+          done
+          if [ ! -f /home/node/.openclaw/workspace/AGENTS.md ]; then
+            cp /agents/shadowman/AGENTS.md /home/node/.openclaw/workspace/AGENTS.md 2>/dev/null || true
+            cp /agents/shadowman/agent.json /home/node/.openclaw/workspace/agent.json 2>/dev/null || true
+          fi
+          chgrp -R 0 /home/node/.openclaw
+          chmod -R g=u /home/node/.openclaw
+        volumeMounts:
+        - name: openclaw-home
+          mountPath: /home/node/.openclaw
+        - name: config-template
+          mountPath: /config
+        - name: shadowman-agent
+          mountPath: /agents/shadowman
       containers:
-      - name: agent-runtime
+      - name: gateway
         image: ${OPENCLAW_IMAGE}
+        imagePullPolicy: Always
         command: ["node", "/app/dist/index.js", "gateway", "run",
                   "--bind", "loopback", "--port", "18789", "--verbose"]
+        ports:
+        - name: gateway
+          containerPort: 18789
+        - name: bridge
+          containerPort: 18790
         env:
         - name: HOME
           value: /home/node
         - name: OPENCLAW_CONFIG_DIR
           value: /home/node/.openclaw
+        - name: OPENCLAW_STATE_DIR
+          value: /home/node/.openclaw
         - name: NODE_OPTIONS
           value: "--max-old-space-size=1536"
         - name: NODE_ENV
           value: production
-        ports:
-        - containerPort: 18789
-          name: gateway
+        - name: OPENCLAW_GATEWAY_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: OPENCLAW_GATEWAY_TOKEN
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: ANTHROPIC_API_KEY
+              optional: true
+        - name: GOOGLE_AI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: GOOGLE_AI_API_KEY
+              optional: true
         resources:
           requests:
             memory: 512Mi
@@ -215,50 +272,63 @@ spec:
           capabilities:
             drop: ["ALL"]
         volumeMounts:
+        - name: openclaw-home
+          mountPath: /home/node/.openclaw
         - name: tmp-volume
           mountPath: /tmp
       volumes:
       - name: tmp-volume
         emptyDir: {}
+      - name: openclaw-home
+        persistentVolumeClaim:
+          claimName: openclaw-home-pvc
+      - name: config-template
+        configMap:
+          name: openclaw-config
+      - name: shadowman-agent
+        configMap:
+          name: shadowman-agent
+          optional: true
 
-  # NemoClaw-inspired network policy: default-deny with explicit allowlist
+  # NemoClaw-inspired: default-deny with explicit allowlist
   networkPolicy:
     ingress:
-      # Only allow traffic from the supervisor gateway
-      - from:
-        - podSelector:
-            matchLabels:
-              app: openclaw
+    # OpenShift Router / Ingress controller
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            network.openshift.io/policy-group: ingress
     egress:
-      # DNS resolution
-      - ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-      # Gateway inference proxy (LLM calls routed through supervisor)
-      - to:
-        - podSelector:
-            matchLabels:
-              app: openclaw
-        ports:
-        - protocol: TCP
-          port: 18789
+    # DNS resolution
+    - ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+    # LLM model APIs (HTTPS)
+    - ports:
+      - protocol: TCP
+        port: 443
+    # In-cluster model endpoint (vLLM, etc.)
+    - to:
+      - namespaceSelector: {}
+        podSelector:
+          matchLabels:
+            app: vllm
+      ports:
+      - protocol: TCP
+        port: 8000
+    # OTEL collector
+    - ports:
+      - protocol: TCP
+        port: 4317
+      - protocol: TCP
+        port: 4318
 ```
 
-`platform/agent-sandbox/kustomization.yaml`:
+`platform/agent-sandbox/sandbox-rbac.yaml.envsubst`:
 
 ```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-- agent-sandbox-template.yaml
-```
-
-**New RBAC** (`platform/agent-sandbox/sandbox-rbac.yaml.envsubst`):
-
-```yaml
-# Allow the gateway ServiceAccount to create/manage SandboxClaims
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -287,202 +357,211 @@ subjects:
   namespace: ${OPENCLAW_NAMESPACE}
 ```
 
+`platform/agent-sandbox/kustomization.yaml`:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- openclaw-user-template.yaml
+- sandbox-rbac.yaml
+```
+
 **Validation:**
 - Apply the SandboxTemplate to the cluster
-- Create a test SandboxClaim manually
-- Verify pod creation, headless Service DNS, and NetworkPolicy enforcement
-- Verify Kata runtime works with this simple pod spec (1 container, 1 volume -- unlike the 11-volume gateway that timed out)
+- Verify the controller creates a shared NetworkPolicy with default-deny posture
+- Create a test SandboxClaim and confirm pod creation + headless Service DNS
 
 ---
 
-### Phase 2: Per-Agent Sandbox Provisioning
+### Phase 2: WarmPool + Lifecycle
 
-Modify the agent lifecycle scripts to create SandboxClaims instead of workspace directories.
+Pre-warm pods for fast user onboarding. Add lifecycle controls for trial users.
 
-**Modified files:**
-
-`scripts/add-agent.sh` -- When adding a new agent:
-
-1. Generate a per-agent `openclaw.json` ConfigMap containing only that agent's config
-2. Generate a per-agent Secret with only the API keys that agent needs
-3. Create a `SandboxClaim` referencing `openclaw-agent-template`
-4. Wait for the Sandbox to be Ready
-5. Seed workspace files into the agent's PVC via `kubectl exec`
-
-`scripts/setup-agents.sh` -- For pre-built agents (resource_optimizer, mlops_monitor):
-
-1. Create per-agent ConfigMaps as before
-2. Create SandboxClaims instead of writing workspace directories into the shared PVC
-3. Wait for all agent sandboxes to be Ready
-4. Seed workspace files into each agent's pod
-
-**New file:** `agents/openclaw/skills/sandbox-agents/SKILL.md`
-
-Teach the supervisor gateway how to communicate with agent sandboxes:
-
-```markdown
-# Sandbox Agent Communication
-
-When you need to communicate with an isolated agent, use the agent's
-headless Service DNS name to send HTTP requests:
-
-  http://<agent-sandbox-name>.<namespace>.svc.cluster.local:18789
-
-The gateway token for each agent sandbox is stored in the agent's
-Secret resource. Use `kubectl get secret` to retrieve it if needed.
-```
-
----
-
-### Phase 3: Inference Proxy
-
-Implement NemoClaw's inference routing pattern: agent sandboxes should not reach model APIs directly. All inference calls go through the supervisor gateway.
-
-**New container** in the supervisor gateway pod: `inference-proxy`
-
-- Lightweight HTTP proxy (Python or envoy) that forwards `/v1/chat/completions` requests to configured model providers
-- Agent sandboxes have their `ANTHROPIC_API_KEY` / `GOOGLE_AI_API_KEY` env vars replaced with a reference to the proxy endpoint
-- NetworkPolicy on agent sandboxes only allows egress to the supervisor gateway -- model API endpoints (api.anthropic.com, generativelanguage.googleapis.com) are blocked
-
-This mirrors NemoClaw's architecture:
-```
-Agent (sandbox) ──► Supervisor gateway (inference-proxy) ──► Model provider
-                                                              ├── Anthropic
-                                                              ├── Google AI
-                                                              └── In-cluster vLLM
-```
-
-**Why:** If an agent sandbox is compromised, the attacker cannot exfiltrate data through model API calls because they never have direct access to model endpoints or API keys.
-
----
-
-### Phase 4: WarmPool + Lifecycle 
-
-**New file:** `platform/agent-sandbox/agent-warmpool.yaml.envsubst`:
+**New file:** `platform/agent-sandbox/openclaw-warmpool.yaml.envsubst`:
 
 ```yaml
 apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxWarmPool
 metadata:
-  name: openclaw-agent-warmpool
+  name: openclaw-warmpool
   namespace: ${OPENCLAW_NAMESPACE}
 spec:
-  replicas: 2
+  replicas: 3
   sandboxTemplateRef:
-    name: openclaw-agent-template
+    name: openclaw-user
 ```
 
-This pre-warms 2 agent pods so new agents can be provisioned instantly (warm pool adoption) instead of waiting for image pull + container start.
+**Lifecycle usage** (in `setup.sh` when provisioning a trial user):
 
-**Lifecycle controls:**
+```yaml
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxClaim
+metadata:
+  name: trial-user-alice
+  namespace: ${OPENCLAW_NAMESPACE}
+spec:
+  sandboxTemplateRef:
+    name: openclaw-user
+  lifecycle:
+    shutdownTime: "2026-04-21T00:00:00Z"  # 30-day trial
+    shutdownPolicy: Retain                  # keep PVC, delete pod
+```
 
-- Scheduled agents (resource_optimizer, mlops_monitor) get `lifecycle.shutdownTime` on their SandboxClaims for automatic cleanup
-- Idle agent detection: agents with no activity for N hours can be scaled to zero (`spec.replicas: 0`) and resumed on demand
+**Validation:**
+- Create WarmPool; verify 3 pods pre-warmed and `readyReplicas: 3` in status
+- Create SandboxClaim; verify it adopts a warm pod (instant Ready)
+- Verify `shutdownTime` triggers cleanup when reached
 
 ---
 
-## 6. File Change Summary
+### Phase 3: Integrate with setup.sh
+
+Modify `setup.sh` to create `SandboxClaim` + user-specific resources instead of raw `Sandbox` CRs.
+
+**Modified files:**
+
+`scripts/setup.sh`:
+1. Apply the `SandboxTemplate` (from `platform/agent-sandbox/`) before user provisioning
+2. For each user, create:
+   - Per-user namespace (already done)
+   - Per-user ConfigMap (`openclaw-config`) and Secrets (`openclaw-secrets`)
+   - `SandboxClaim` referencing `openclaw-user` template
+3. Wait for `SandboxClaim` condition `Ready`
+4. Seed workspace via `kubectl exec` into the claimed pod
+
+`scripts/setup-agents.sh`:
+1. Resolve the pod name from the SandboxClaim's status
+2. Seed agent workspaces into the user's pod via `kubectl exec` (unchanged logic)
+
+**No changes needed to:**
+- `add-agent.sh` -- Agents are added to the user's existing pod, not to separate pods
+- `export-config.sh` -- Still targets the user's pod via label selector
+- `update-jobs.sh` -- CronJobs write reports to ConfigMaps; gateway reads them from volume mounts
+
+---
+
+### Phase 4: Kata Runtime (Optional)
+
+Add VM-level isolation between users via Kata Containers.
+
+**Constraint:** The full OpenClaw pod (3 containers + 1 init container + 11 volume mounts) exceeds Kata's default sandbox creation timeout. Two options:
+
+**Option A: Simplified pod spec for Kata**
+
+Create a second `SandboxTemplate` (`openclaw-user-kata`) with a stripped-down pod spec:
+- Single `gateway` container (no oauth-proxy, no agent-card)
+- 2-3 volume mounts only (PVC + config + tmp)
+- Ingress via cluster-level ingress controller instead of oauth-proxy sidecar
+
+**Option B: Tune Kata timeout**
+
+Increase `sandbox_creation_timeout` in the Kata TOML configuration on worker nodes. This requires node-level access and cluster-admin privileges. Validate on a test node first.
+
+**Recommendation:** Start with runc (Phase 1-3). Add Kata for high-security tenants in Phase 4 using Option A (simplified template). The NetworkPolicy + per-namespace isolation provides strong defense-in-depth even without Kata.
+
+---
+
+## 7. File Change Summary
 
 | Phase | Action | File | Description |
 |-------|--------|------|-------------|
-| 1 | CREATE | `platform/agent-sandbox/agent-sandbox-template.yaml.envsubst` | SandboxTemplate with NetworkPolicy |
+| 1 | CREATE | `platform/agent-sandbox/openclaw-user-template.yaml.envsubst` | SandboxTemplate with full pod spec + NetworkPolicy |
 | 1 | CREATE | `platform/agent-sandbox/sandbox-rbac.yaml.envsubst` | RBAC for SandboxClaim management |
 | 1 | CREATE | `platform/agent-sandbox/kustomization.yaml` | Kustomize config |
-| 2 | MODIFY | `scripts/add-agent.sh` | Create SandboxClaim instead of shared workspace |
-| 2 | MODIFY | `scripts/setup-agents.sh` | Create per-agent SandboxClaims |
-| 2 | CREATE | `agents/openclaw/skills/sandbox-agents/SKILL.md` | Agent communication skill |
-| 3 | CREATE | `agents/openclaw/base/inference-proxy.yaml` | Inference proxy container config |
-| 3 | MODIFY | `agents/openclaw/base/openclaw-sandbox.yaml.envsubst` | Add inference-proxy container |
-| 4 | CREATE | `platform/agent-sandbox/agent-warmpool.yaml.envsubst` | WarmPool for fast provisioning |
-| ALL | MODIFY | `CLAUDE.md` | Document the full architecture |
+| 2 | CREATE | `platform/agent-sandbox/openclaw-warmpool.yaml.envsubst` | WarmPool for instant user onboarding |
+| 3 | MODIFY | `scripts/setup.sh` | Create SandboxClaim instead of raw Sandbox CR |
+| 3 | MODIFY | `scripts/setup-agents.sh` | Resolve pod from SandboxClaim status |
+| ALL | MODIFY | `CLAUDE.md` | Document the architecture |
 
-## 7. Security Comparison
+## 8. Security Comparison
 
-| Threat | Current (shared gateway) | Option A (gateway in Sandbox) | This Design (per-agent Sandbox) |
-|--------|-------------------------|------------------------------|-------------------------------|
-| Agent reads another agent's data | Possible (shared PVC) | Possible (shared PVC) | **Blocked** (separate PVCs) |
-| Agent steals API keys | Possible (shared secrets) | Possible (shared secrets) | **Blocked** (per-agent secrets) |
-| Agent makes arbitrary network calls | Possible (no NetworkPolicy) | Possible (no NetworkPolicy) | **Blocked** (default-deny egress) |
-| Agent accesses model API directly | Possible (keys in env) | Possible (keys in env) | **Blocked** (inference proxy) |
-| Agent escapes container | Possible (runc) | Possible (runc) | **Blocked** (Kata VM) |
-| Agent modifies gateway config | Possible (shared filesystem) | Possible (shared filesystem) | **Blocked** (separate pod) |
-| Compromised agent lateral movement | Full access to pod | Full access to pod | **Contained** to own Sandbox |
+| Threat | Current (Sandbox CR, no NetworkPolicy) | This Design (SandboxTemplate + NetworkPolicy) |
+|--------|----------------------------------------|-----------------------------------------------|
+| User A's agent reads User B's data | **Blocked** (separate namespaces/PVCs) | **Blocked** (separate namespaces/PVCs) |
+| User A's agent steals User B's API keys | **Blocked** (separate secrets) | **Blocked** (separate secrets) |
+| Agent makes arbitrary network calls | **Possible** (no NetworkPolicy) | **Blocked** (default-deny egress, explicit allowlist) |
+| Agent reaches cluster-internal services | **Possible** (flat network) | **Blocked** (egress restricted to DNS + model APIs) |
+| Container escape → host access | **Possible** (runc, shared kernel) | **Blocked** with Kata (VM boundary); mitigated without |
+| 100 idle pods waste resources | **Yes** (always running) | **No** (scale-to-zero, WarmPool) |
+| Slow onboarding for new users | **Yes** (~60-90s cold start) | **No** (WarmPool instant adoption) |
+| Trial user cleanup | **Manual** | **Automatic** (`lifecycle.shutdownTime`) |
 
-## 8. Kata Runtime Compatibility
+## 9. What This Design Intentionally Does NOT Do
 
-The gateway pod (Option A) is too complex for Kata (3 containers + 11 volume mounts -- the Kata sandbox creation times out). Per-agent sandboxes solve this:
+### Per-agent isolation
 
-| | Gateway Pod (Option A) | Agent Sandbox (This Design) |
-|-|----------------------|---------------------------|
-| Containers | 3 (oauth-proxy, gateway, agent-card) | 1 (agent-runtime) |
-| Init containers | 1 (init-config) | 1 (init-config, simpler) |
-| Volume mounts | 11 | 2-3 (PVC + config + tmp) |
-| Kata compatible | No (timeout) | **Yes** (simple spec) |
-| Kata overhead | N/A | 250m CPU + 350Mi memory per agent |
+Agents within a user's pod share process, memory, filesystem, and secrets. This is by design:
 
-## 9. Risks and Mitigations
+- All agents belong to the same human -- there is no trust boundary between them
+- OpenClaw agents are in-process identities inside a single Node.js gateway, not separate executables
+- Splitting agents into separate pods would require solving inter-pod communication (HTTP, shared filesystem, config synchronization) with no security benefit for a single-user deployment
+- NemoClaw takes the same approach: one sandbox per gateway, agents share it
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|-----------|
-| OpenClaw gateway does not support single-agent mode cleanly | Low | High | Gateway already supports `agents.list` with one entry; validated in current setup |
-| Agent-to-gateway HTTP communication adds latency | Medium | Low | Headless Service DNS is in-cluster; sub-millisecond. WarmPool eliminates cold start |
-| Per-agent PVCs consume more storage | Medium | Low | Use smaller PVCs (5Gi per agent vs 20Gi shared); lifecycle cleanup |
-| Inference proxy adds latency to LLM calls | Low | Low | Simple HTTP proxy; < 1ms overhead |
-| Kata overhead per agent is significant | Medium | Medium | Only enable Kata for highest-risk agents; use runc for trusted agents |
-| SandboxTemplate NetworkPolicy too restrictive | Medium | Medium | Start with egress to gateway only; add rules incrementally based on agent needs |
-| Agent Sandbox controller v0.2.1 is alpha | Medium | High | Option A already validates basic functionality; monitor upstream releases |
+If per-agent isolation is needed in the future (e.g., multi-tenant shared gateways), it would require running separate OpenClaw gateway instances -- one per agent -- in separate Sandbox pods. That architecture is documented separately as an aspirational direction.
 
-## 10. Testing Plan
+### Per-binary network rules
 
-| Test | Phase | Method |
-|------|-------|--------|
-| SandboxTemplate creates pods with correct NetworkPolicy | 1 | Apply template + claim; verify NetworkPolicy resource; test egress with `curl` from pod |
-| Kata runtime works with simple agent pod | 1 | Create claim with `runtimeClassName: kata`; verify all containers start |
-| Agent sandbox reachable from gateway via DNS | 2 | `curl http://<sandbox>.raghu-openclaw.svc.cluster.local:18789` from gateway |
-| Agent sandbox cannot reach model APIs directly | 2 | `curl https://api.anthropic.com` from agent pod (should be blocked) |
-| Inference proxy routes LLM calls correctly | 3 | Send chat completion request through proxy; verify response |
-| WarmPool provides fast allocation | 4 | Create claim; measure time to Ready vs cold start |
-| Scale-to-zero preserves agent PVC data | 4 | Scale to 0; scale to 1; verify workspace files intact |
+NemoClaw can restrict which network endpoints each binary can reach (e.g., `claude` can reach `api.anthropic.com`; `gh` can reach `github.com`). Kubernetes NetworkPolicy operates at the pod level, not per-binary. For finer-grained control, consider Cilium `CiliumNetworkPolicy` with L7 rules or OpenShift `EgressNetworkPolicy` with FQDN-based filtering.
 
-## 11. Relationship to NemoClaw
+## 10. Relationship to NemoClaw
 
-This design adapts NemoClaw's security philosophy for Kubernetes:
+This design adapts NemoClaw's security philosophy for Kubernetes, at the same granularity NemoClaw uses (per-gateway, not per-agent):
 
 | NemoClaw Concept | This Design's Equivalent |
 |-----------------|------------------------|
-| OpenShell sandbox | Agent Sandbox CR (Kubernetes-native) |
+| OpenShell sandbox | SandboxClaim → Sandbox CR (Kubernetes-native) |
 | `openclaw-sandbox.yaml` policy | `SandboxTemplate.spec.networkPolicy` |
-| Per-binary network rules | Not available in K8s NetworkPolicy (future: consider Cilium L7 policy) |
-| Operator TUI approval flow | Not implemented (static policy); future: admission webhook |
-| Landlock + seccomp | Kata VM isolation (stronger boundary) |
-| Inference routing through OpenShell | Inference proxy container in supervisor gateway |
-| `/sandbox` + `/tmp` writable | Per-agent PVC + emptyDir `/tmp`; `readOnlyRootFilesystem: true` |
+| Per-binary network rules | Not available in K8s NetworkPolicy (future: Cilium L7) |
+| Operator TUI approval flow | Not implemented (static policy) |
+| Landlock + seccomp | Kata VM isolation (stronger boundary) or runc + securityContext |
+| `/sandbox` + `/tmp` writable | Per-user PVC + emptyDir `/tmp`; `readOnlyRootFilesystem: true` |
 
-**What NemoClaw provides that this design does not (yet):**
-- Per-binary network rules (requires Cilium or similar L7-aware CNI)
-- Real-time operator approval for new network destinations
-- Dynamic policy updates without pod restart
-
-**What this design provides that NemoClaw does not:**
-- Per-agent isolation (NemoClaw is per-gateway only)
+**What this design adds beyond NemoClaw:**
 - Kubernetes-native lifecycle (scale-to-zero, warm pools, scheduled expiry)
-- Kata VM isolation (hardware-level boundary vs container + LSM)
-- Multi-cluster/multi-namespace agent federation via A2A
+- Multi-user provisioning from a single template
+- Kata VM isolation (hardware boundary between users)
+- Multi-cluster agent federation via A2A / Kagenti
+
+## 11. Risks and Mitigations
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| Kata times out with full OpenClaw pod spec | Confirmed | Medium | Use runc by default; offer simplified Kata template for high-security tenants |
+| SandboxTemplate NetworkPolicy too restrictive | Medium | Medium | Start with egress to port 443 (all HTTPS); tighten incrementally |
+| WarmPool pre-warmed pods consume idle resources | Low | Low | Set `replicas` based on expected onboarding rate; HPA supported |
+| Agent Sandbox controller v0.2.1 is alpha | Medium | High | Option A already validates basic Sandbox CR functionality on this cluster |
+| Per-user namespaces require cluster-admin for provisioning | Low | Low | Already the model in `setup.sh`; no change needed |
+| Scale-to-zero loses in-memory agent state | Medium | Low | Agents are stateless between sessions; PVC preserves all persistent data |
+
+## 12. Testing Plan
+
+| Test | Phase | Method |
+|------|-------|--------|
+| SandboxTemplate creates NetworkPolicy | 1 | Apply template; verify `kubectl get networkpolicy` shows default-deny |
+| NetworkPolicy blocks unauthorized egress | 1 | `curl http://internal-service:8080` from sandbox pod (should fail) |
+| NetworkPolicy allows model API egress | 1 | `curl https://api.anthropic.com` from sandbox pod (should succeed) |
+| SandboxClaim creates pod from template | 1 | Create claim; verify pod Running with correct spec |
+| WarmPool pre-warms pods | 2 | Create WarmPool; verify `readyReplicas` matches `replicas` |
+| SandboxClaim adopts warm pod | 2 | Create claim; measure time-to-Ready (expect < 5s) |
+| Lifecycle auto-expires claim | 2 | Create claim with `shutdownTime` 2 min from now; verify pod deleted |
+| setup.sh creates SandboxClaim | 3 | Run `setup.sh`; verify claim + pod + config seeded |
+| Scale-to-zero preserves PVC | 3 | Set `replicas: 0`; set `replicas: 1`; verify workspace files intact |
 
 ---
 
 ## Appendix: NemoClaw Policy Reference
 
-The following is the network policy structure from NemoClaw's `openclaw-sandbox.yaml`, adapted as a reference for designing Kubernetes NetworkPolicy rules:
+Network policy structure from NemoClaw's `openclaw-sandbox.yaml`, adapted as reference for Kubernetes NetworkPolicy rules:
 
 | NemoClaw Policy Group | Allowed Endpoints | Kubernetes Equivalent |
 |----------------------|-------------------|---------------------|
-| `claude_code` | `api.anthropic.com:443`, `statsig.anthropic.com:443`, `sentry.io:443` | Egress to these IPs on port 443 (resolve at deploy time) |
-| `nvidia` | `integrate.api.nvidia.com:443`, `inference-api.nvidia.com:443` | Egress to NVIDIA IPs on port 443 |
-| `github` | `github.com:443`, `api.github.com:443` | Egress to GitHub IPs on port 443 |
-| `telegram` | `api.telegram.org:443` | Egress to Telegram IPs on port 443 |
+| `claude_code` | `api.anthropic.com:443`, `statsig.anthropic.com:443` | Egress port 443 (pod-level, all HTTPS) |
+| `nvidia` | `integrate.api.nvidia.com:443` | Egress port 443 |
+| `github` | `github.com:443`, `api.github.com:443` | Egress port 443 |
+| `telegram` | `api.telegram.org:443` | Egress port 443 |
 
-**Note:** Kubernetes NetworkPolicy does not support hostname-based rules -- only IP-based `ipBlock.cidr`. For hostname-based egress control, consider:
+**Note:** Kubernetes NetworkPolicy does not support hostname-based rules -- only IP-based `ipBlock.cidr`. The template uses port-based egress (allow port 443) as a practical default. For hostname-based filtering:
+- Cilium `CiliumNetworkPolicy` with FQDN-based egress rules
+- OpenShift `EgressNetworkPolicy` for domain-based filtering
 - Resolve hostnames at deploy time and inject as `ipBlock` rules
-- Use Cilium `CiliumNetworkPolicy` with FQDN-based egress rules
-- Use OpenShift `EgressNetworkPolicy` for domain-based filtering
